@@ -9,7 +9,7 @@ import { voice } from '@/api/endpoints';
 import { useLocationPing } from '@/hooks/useLocationPing';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useT } from '@/i18n/useT';
-import { SpeechQueue, configureAudioForPlayback, splitSpeakable } from '@/lib/speech';
+import { SpeechQueue, configureAudioForPlayback } from '@/lib/speech';
 import {
   abortRecognition,
   addRecognitionListeners,
@@ -127,9 +127,13 @@ export default function CallScreen() {
   const streamRef = useRef<StreamController | null>(null);
   const speechRef = useRef<SpeechQueue | null>(null);
   const assistantBufferRef = useRef('');
+  /** Index into `assistantBufferRef` up to which text has been queued for speech. */
+  const flushedLengthRef = useRef(0);
   const assistantTurnIdRef = useRef<string | null>(null);
   const mutedRef = useRef(false);
   const phaseRef = useRef<Phase>('idle');
+  /** True between a user hang-up and the next call, so `onClose` skips the flush. */
+  const phaseStoppedRef = useRef(false);
 
   const statusQuery = useQuery({ queryKey: keys.voiceStatus, queryFn: () => voice.status() });
 
@@ -179,10 +183,28 @@ export default function CallScreen() {
     (body: { message?: string; greeting?: boolean }) => {
       const queue = speechRef.current;
       assistantBufferRef.current = '';
+      flushedLengthRef.current = 0;
       const turnId = nextTurnId();
       assistantTurnIdRef.current = turnId;
       setTurns((current) => [...current, { id: turnId, role: 'assistant', content: '', pending: true }]);
       setStreaming(true);
+
+      /**
+       * Speaks everything generated since the last flush as ONE segment.
+       *
+       * Called at a tool boundary and when generation finishes — never per delta.
+       * Speaking sentence-by-sentence produced a request per sentence and choppy
+       * audio; slicing by character count against a trimmed `spoken` string also
+       * silently dropped the tail at tool boundaries.
+       */
+      const flushSpeech = () => {
+        const buffer = assistantBufferRef.current;
+        const from = flushedLengthRef.current;
+        if (from >= buffer.length) return;
+        const segment = buffer.slice(from);
+        flushedLengthRef.current = buffer.length;
+        if (segment.trim()) queue?.enqueue(segment);
+      };
 
       const controller = openChatStream(
         {
@@ -196,25 +218,13 @@ export default function CallScreen() {
             if ('delta' in event) {
               assistantBufferRef.current += event.delta;
               updateAssistantTurn({ content: assistantBufferRef.current, pending: false });
-
-              // Speak whole sentences as they complete, so audio starts early.
-              const { speak } = splitSpeakable(assistantBufferRef.current);
-              if (speak) {
-                const already = queue?.spoken ?? '';
-                if (speak.length > already.length) {
-                  queue?.enqueue(speak.slice(already.length));
-                }
-              }
+              // Text is spoken at the next tool boundary or on `done`.
               return;
             }
 
             if ('tool' in event && event.tool.status === 'start') {
-              // Flush what we have at a tool boundary before the next segment.
-              const { rest } = splitSpeakable(assistantBufferRef.current);
-              if (rest.trim()) {
-                const already = queue?.spoken ?? '';
-                if (rest.length > 0) queue?.enqueue(rest.slice(already.length));
-              }
+              // Speak the text that came before this tool, then start fresh.
+              flushSpeech();
               return;
             }
 
@@ -225,9 +235,8 @@ export default function CallScreen() {
             }
 
             if ('done' in event) {
-              const tail = assistantBufferRef.current;
-              const already = queue?.spoken ?? '';
-              if (tail.length > already.length) queue?.enqueue(tail.slice(already.length));
+              // The whole remaining reply — including text after the last tool.
+              flushSpeech();
               updateAssistantTurn({ pending: false });
             }
           },
@@ -236,6 +245,10 @@ export default function CallScreen() {
             updateAssistantTurn({ pending: false });
           },
           onClose: () => {
+            // A dropped connection still leaves a partial reply worth speaking.
+            // A user-initiated stop deletes the turn server-side, so `queue.clear()`
+            // has already run and `flushSpeech` is a no-op against a dead queue.
+            if (!phaseStoppedRef.current) flushSpeech();
             setStreaming(false);
             streamRef.current = null;
           },
@@ -296,6 +309,8 @@ export default function CallScreen() {
     setTurns([]);
     setPartial('');
     setPhase('connecting');
+    // A fresh call may speak again.
+    phaseStoppedRef.current = false;
 
     await configureAudioForPlayback();
 
@@ -335,6 +350,9 @@ export default function CallScreen() {
     }
     streamRef.current = null;
 
+    // Set before clearing the queue, so `onClose` never re-speaks a stopped turn
+    // (the server deletes it, so there is nothing to say).
+    phaseStoppedRef.current = true;
     speechRef.current?.clear();
     speechRef.current = null;
     abortRecognition();
@@ -387,9 +405,25 @@ export default function CallScreen() {
       // Typing before the call starts still works: treat it as a chat turn.
       setPhase('live');
       phaseRef.current = 'live';
+      phaseStoppedRef.current = false;
+    }
+    // Typing before "Start call" left the queue unset, so nothing was spoken.
+    if (!speechRef.current) {
+      speechRef.current = new SpeechQueue(language, statusQuery.data?.default_voice, (value) => {
+        setSpeaking(value);
+        if (value) pauseListening();
+        else if (!mutedRef.current && phaseRef.current === 'live') beginListening();
+      });
     }
     runAssistantTurn({ message: text });
-  }, [draft, runAssistantTurn]);
+  }, [
+    beginListening,
+    draft,
+    language,
+    pauseListening,
+    runAssistantTurn,
+    statusQuery.data?.default_voice,
+  ]);
 
   const firstName = session.user?.first_name ?? session.user?.full_name ?? '';
 

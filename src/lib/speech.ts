@@ -3,6 +3,7 @@ import { File, Paths } from 'expo-file-system';
 
 import { voice as voiceApi } from '@/api/endpoints';
 import type { Language } from '@/api/types';
+import { splitForSpeech } from './speechSegments';
 
 /**
  * Text-to-speech playback for call mode (DESIGN §5.5).
@@ -42,10 +43,13 @@ async function speakSegment(
 
   await new Promise<void>((resolve) => {
     let settled = false;
+    let safety: ReturnType<typeof setTimeout> | null = null;
+
     const finish = () => {
       if (settled) return;
       settled = true;
       subscription.remove();
+      if (safety) clearTimeout(safety);
       try {
         player.pause();
         player.remove();
@@ -65,8 +69,10 @@ async function speakSegment(
       if (status.didJustFinish) finish();
     });
 
-    // Safety net: never hang the queue if the status event is missed.
-    setTimeout(finish, 60_000);
+    // Safety net sized to the text, not a flat minute: ~15 characters per second
+    // of speech is a conservative floor, plus a generous margin.
+    const expectedMs = Math.max(30_000, Math.ceil((text.length / 15) * 1000) + 15_000);
+    safety = setTimeout(finish, expectedMs);
 
     try {
       player.play();
@@ -77,15 +83,20 @@ async function speakSegment(
 }
 
 /**
- * Serial playback queue. Segments are spoken in order, while more text can still
- * be streaming in.
+ * Serial playback queue.
+ *
+ * `enqueue` takes a **complete segment** — the assistant text between tool calls,
+ * or the whole reply when there were no tools. Segments are spoken in order.
+ *
+ * There is deliberately no "how much have I spoken" bookkeeping: the caller
+ * tracks its own buffer offset, and the old `spoken` string was not a prefix of
+ * that buffer, so slicing against it dropped text at tool boundaries.
  */
 export class SpeechQueue {
   private queue: string[] = [];
   private busy = false;
   private stopped = false;
   private current: AudioPlayer | null = null;
-  private spokenText = '';
 
   constructor(
     private readonly language: Language,
@@ -93,16 +104,12 @@ export class SpeechQueue {
     private readonly onSpeakingChange?: (speaking: boolean) => void,
   ) {}
 
-  /** Text already sent to the voice provider, used to avoid re-speaking. */
-  get spoken(): string {
-    return this.spokenText;
-  }
-
+  /** Queue a whole segment. Oversized segments are split into safe requests. */
   enqueue(text: string): void {
-    const trimmed = text.trim();
-    if (!trimmed || this.stopped) return;
-    this.spokenText += `${trimmed} `;
-    this.queue.push(trimmed);
+    if (this.stopped) return;
+    for (const chunk of splitForSpeech(text)) {
+      this.queue.push(chunk);
+    }
     void this.drain();
   }
 
@@ -135,6 +142,12 @@ export class SpeechQueue {
       } catch {
         // A failed segment is skipped; the transcript still shows the text.
       }
+      // The user may have hung up while this segment was fetching or playing.
+      // Bail without touching state — `clear()` already did the cleanup.
+      if (this.stopped) {
+        this.busy = false;
+        return;
+      }
     }
 
     this.busy = false;
@@ -143,8 +156,7 @@ export class SpeechQueue {
 }
 
 /**
- * Splits accumulated assistant text into what can be spoken now and what should
- * wait for more deltas. Re-exported from `speechSegments` so the pure logic stays
+ * Splits a segment into request-sized pieces. Re-exported so the pure logic stays
  * testable without a native runtime.
  */
-export { splitSpeakable } from './speechSegments';
+export { splitForSpeech, MAX_SEGMENT_CHARS } from './speechSegments';

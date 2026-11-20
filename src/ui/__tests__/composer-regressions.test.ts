@@ -1,9 +1,10 @@
 /**
  * Regression tests for bugs found while running the web target against the real
  * SAGE API. Each case here failed at some point during manual QA.
+ *
+ * Call-mode segmentation now lives in `src/lib/__tests__/speech.test.ts`, because
+ * speech is no longer split per sentence as deltas arrive.
  */
-
-import { splitSpeakable } from '@/lib/speechSegments';
 
 describe('composer: Enter must send (web)', () => {
   /**
@@ -62,25 +63,5 @@ describe('composer: stopped text must be restorable', () => {
 
   it('clears the composer once the override is null and nothing is restored', () => {
     expect(value({ override: null, restored: null })).toBe('');
-  });
-});
-
-describe('call screen: sentence segmentation still holds', () => {
-  it('does not lose text when a reply streams in fragments', () => {
-    const full = 'You have a dentist appointment at 3pm. Bring the referral letter.';
-    let spoken = '';
-    let pending = '';
-
-    for (const char of full) {
-      pending += char;
-      const { speak, rest } = splitSpeakable(pending);
-      if (speak) {
-        spoken += speak;
-        pending = rest;
-      }
-    }
-    spoken += pending;
-
-    expect(spoken).toBe(full);
   });
 });

@@ -105,6 +105,27 @@ src/
 | Stop semantics | `api/stream.ts`, `useChatController` | POST stop **then** abort; a stopped turn is deleted server-side, so both bubbles roll back |
 | RTL | `lib/rtl.ts` | mirrored **manually** via `isRtl`; `I18nManager.forceRTL` is deliberately not used (see below) |
 | Location ping | `hooks/useLocationPing.ts` | 5 s cadence, skip in-flight, pause in background, stop permanently on denial or `403` |
+| Call speech | `lib/speech.ts`, `app/call.tsx` | speak **one segment per tool boundary**, never per delta (see below) |
+
+### How call-mode speech is segmented
+
+`POST /api/voice/speak` is called with a **whole segment**, not a sentence:
+
+- the assistant text between tool calls, flushed when a tool starts;
+- the remaining reply, flushed on `done`;
+- the partial reply on a dropped connection (but never after a hang-up, since the
+  server deletes a stopped turn).
+
+The call screen tracks a single index into its streamed buffer (`flushedLengthRef`)
+and speaks `buffer.slice(flushedLength)`. It deliberately keeps **no**
+"how much have I spoken" string: the previous version compared character counts
+against a trimmed `spoken` value that was not a prefix of the buffer, so
+`rest.slice(already.length)` silently dropped the tail of every segment at a tool
+boundary.
+
+`splitForSpeech` only intervenes when a segment exceeds the endpoint's limit,
+packing whole sentences up to 3500 characters and hard-splitting an oversized
+single sentence.
 
 ### Why language switching is instant
 
