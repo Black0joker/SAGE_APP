@@ -1,0 +1,99 @@
+{
+  "expo": {
+    "name": "SAGE",
+    "slug": "sage-native",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "sage",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sage.assistant",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "SAGE uses the microphone so you can talk to it in voice call mode.",
+        "NSLocationWhenInUseUsageDescription": "SAGE uses your location to show what you noted about familiar places. Coordinates never leave your account.",
+        "NSSpeechRecognitionUsageDescription": "SAGE uses speech recognition to understand what you say during a voice call."
+      }
+    },
+    "android": {
+      "package": "com.sage.assistant",
+      "adaptiveIcon": {
+        "backgroundColor": "#0f3d33",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0f3d33",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-secure-store",
+      "expo-font",
+      "expo-sharing",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "SAGE uses the microphone so you can talk to it in voice call mode."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SAGE uses your location to show what you noted about familiar places. Coordinates never leave your account."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "SAGE uses the microphone so you can talk to it in voice call mode.",
+          "speechRecognitionPermission": "SAGE uses speech recognition to understand what you say during a voice call."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "16e37d31-d09c-47f4-b12c-104fe20334e9"
+      }
+    },
+    "owner": "warriorx"
+  }
+}

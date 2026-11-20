@@ -1,0 +1,16 @@
+# EAS uploads the project directory. Without git, it falls back to .gitignore,
+# but listing the heavy/irrelevant paths explicitly keeps uploads small and fast.
+node_modules/
+.expo/
+dist/
+web-build/
+android/
+ios/
+.playwright-mcp/
+coverage/
+*.log
+
+# Never upload local env files that could hold real secrets. The API URL is
+# supplied per-profile in eas.json instead.
+.env
+.env.*.local
