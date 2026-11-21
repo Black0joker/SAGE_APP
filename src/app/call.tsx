@@ -116,11 +116,14 @@ export default function CallScreen() {
   const setLanguage = usePrefs((state) => state.setLanguage);
 
   const [phase, setPhase] = useState<Phase>('idle');
-  const [muted, setMuted] = useState(false);
+  /** Push-to-talk: true only between tapping Record and tapping Stop. */
+  const [recording, setRecording] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [turns, setTurns] = useState<CallTurn[]>([]);
   const [partial, setPartial] = useState('');
+  /** Finals captured during this recording, shown live before the send. */
+  const [captured, setCaptured] = useState('');
   const [banner, setBanner] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
@@ -130,10 +133,16 @@ export default function CallScreen() {
   /** Index into `assistantBufferRef` up to which text has been queued for speech. */
   const flushedLengthRef = useRef(0);
   const assistantTurnIdRef = useRef<string | null>(null);
-  const mutedRef = useRef(false);
+  const recordingRef = useRef(false);
   const phaseRef = useRef<Phase>('idle');
   /** True between a user hang-up and the next call, so `onClose` skips the flush. */
   const phaseStoppedRef = useRef(false);
+  /** Finals accumulated during the current recording, in order. */
+  const sessionTextRef = useRef('');
+  /** Set when the user taps Stop: the next final/end must send the buffer. */
+  const pendingSendRef = useRef(false);
+  /** Safety net for recognizers that never emit a final after stop. */
+  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const statusQuery = useQuery({ queryKey: keys.voiceStatus, queryFn: () => voice.status() });
 
@@ -145,8 +154,8 @@ export default function CallScreen() {
   }, [phase]);
 
   useEffect(() => {
-    mutedRef.current = muted;
-  }, [muted]);
+    recordingRef.current = recording;
+  }, [recording]);
 
   /**
    * The status-derived banner is computed rather than stored, so the effect that
@@ -162,15 +171,6 @@ export default function CallScreen() {
   }, [statusQuery.data, t]);
 
   const bannerText = banner ?? statusBanner;
-
-  const beginListening = useCallback(() => {
-    if (mutedRef.current || phaseRef.current !== 'live') return;
-    startRecognition(language);
-  }, [language]);
-
-  const pauseListening = useCallback(() => {
-    stopRecognition();
-  }, []);
 
   const updateAssistantTurn = useCallback((patch: Partial<CallTurn>) => {
     const id = assistantTurnIdRef.current;
@@ -260,32 +260,86 @@ export default function CallScreen() {
     [language, updateAssistantTurn],
   );
 
-  const handleFinalSpeech = useCallback(
-    (transcript: string) => {
-      const text = transcript.trim();
-      setPartial('');
-      if (!text) return;
-      setTurns((current) => [...current, { id: nextTurnId(), role: 'user', content: text }]);
-      runAssistantTurn({ message: text });
-    },
-    [runAssistantTurn],
-  );
+  const handleFinalSpeech = useCallback((transcript: string) => {
+    const text = transcript.trim();
+    if (!text) return;
+    // Accumulate: nothing is sent until the user taps Stop.
+    sessionTextRef.current = sessionTextRef.current ? `${sessionTextRef.current} ${text}` : text;
+    setCaptured(sessionTextRef.current);
+    setPartial('');
+  }, []);
+
+  /**
+   * Sends whatever has been captured, exactly once, then resets the session.
+   *
+   * `force` is used by the safety timer, which must send even if the engine never
+   * signals the end of the utterance.
+   */
+  const flushRecording = useCallback((force = false) => {
+    if (!pendingSendRef.current) return;
+    if (!force && recordingRef.current) return;
+    pendingSendRef.current = false;
+
+    if (sendTimerRef.current) {
+      clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
+
+    const text = sessionTextRef.current.trim();
+    sessionTextRef.current = '';
+    setCaptured('');
+    setPartial('');
+    if (!text) return; // nothing was said: send nothing
+
+    setTurns((current) => [...current, { id: nextTurnId(), role: 'user', content: text }]);
+    runAssistantTurn({ message: text });
+  }, [runAssistantTurn]);
+
+  const startRecording = useCallback(() => {
+    if (phaseRef.current !== 'live' || speaking) return;
+    sessionTextRef.current = '';
+    pendingSendRef.current = false;
+    setCaptured('');
+    setPartial('');
+    setRecording(true);
+    recordingRef.current = true;
+    startRecognition(language);
+  }, [language, speaking]);
+
+  const stopRecording = useCallback(() => {
+    if (!recordingRef.current) return;
+    setRecording(false);
+    recordingRef.current = false;
+    // Ask the engine to finalise; the result arrives asynchronously in `onFinal`.
+    pendingSendRef.current = true;
+    stopRecognition();
+
+    // Some Android recognizers never emit a final after stop, so never hang.
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    sendTimerRef.current = setTimeout(() => flushRecording(true), 1500);
+  }, [flushRecording]);
 
   useEffect(() => {
     if (phase !== 'live') return;
 
     const unsubscribe = addRecognitionListeners({
       onEnd: () => {
-        // The recognizer stops after each final result; resume unless the user
-        // muted, the app moved on, or SAGE is talking.
-        if (!mutedRef.current && phaseRef.current === 'live') {
+        // Push-to-talk: resume only while the user is still recording.
+        if (recordingRef.current) {
           setTimeout(() => {
-            if (!mutedRef.current && phaseRef.current === 'live') beginListening();
-          }, 400);
+            if (recordingRef.current) startRecognition(language);
+          }, 300);
+        } else if (pendingSendRef.current) {
+          // The engine finished: send everything captured for this utterance.
+          flushRecording();
         }
       },
       onPartial: (transcript) => setPartial(transcript),
-      onFinal: (transcript) => handleFinalSpeech(transcript),
+      onFinal: (transcript) => {
+        handleFinalSpeech(transcript);
+        // Do NOT send here: continuous mode can emit several finals for one
+        // utterance. The send happens on `onEnd`, or via the safety timer.
+      },
       onError: (code) => {
         if (code.includes('not-allowed') || code.includes('permission')) {
           setBanner(t('micDenied'));
@@ -298,11 +352,21 @@ export default function CallScreen() {
         } else if (code.includes('audio-capture')) {
           setBanner(t('micUnavailable'));
         }
+        // Stop cleanly, keeping whatever was already captured.
+        setRecording(false);
+        recordingRef.current = false;
       },
     });
 
     return unsubscribe;
-  }, [beginListening, handleFinalSpeech, phase, t]);
+  }, [flushRecording, handleFinalSpeech, language, phase, t]);
+
+  useEffect(
+    () => () => {
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    },
+    [],
+  );
 
   const startCall = useCallback(async () => {
     setBanner(null);
@@ -316,9 +380,6 @@ export default function CallScreen() {
 
     speechRef.current = new SpeechQueue(language, statusQuery.data?.default_voice, (value) => {
       setSpeaking(value);
-      // Never let the microphone hear SAGE's own voice.
-      if (value) pauseListening();
-      else if (!mutedRef.current && phaseRef.current === 'live') beginListening();
     });
 
     // Typing always works, so this is a warning rather than a failure.
@@ -334,11 +395,11 @@ export default function CallScreen() {
 
     setPhase('live');
     phaseRef.current = 'live';
-    if (recognitionReady) beginListening();
+    // Nothing listens until the user taps Record.
 
     // The greeting turn: with no messages, the server has the assistant open.
     runAssistantTurn({ greeting: true });
-  }, [beginListening, language, pauseListening, runAssistantTurn, statusQuery.data?.default_voice, t]);
+  }, [language, runAssistantTurn, statusQuery.data?.default_voice, t]);
 
   const hangUp = useCallback(() => {
     const controller = streamRef.current;
@@ -353,12 +414,22 @@ export default function CallScreen() {
     // Set before clearing the queue, so `onClose` never re-speaks a stopped turn
     // (the server deletes it, so there is nothing to say).
     phaseStoppedRef.current = true;
+    // Discard an in-progress recording: a hung-up call must not send it.
+    pendingSendRef.current = false;
+    sessionTextRef.current = '';
+    if (sendTimerRef.current) {
+      clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
+    setRecording(false);
+    recordingRef.current = false;
     speechRef.current?.clear();
     speechRef.current = null;
     abortRecognition();
     setSpeaking(false);
     setStreaming(false);
     setPartial('');
+    setCaptured('');
     setPhase('ended');
     phaseRef.current = 'ended';
   }, []);
@@ -369,32 +440,29 @@ export default function CallScreen() {
       speechRef.current?.clear();
       abortRecognition();
       streamRef.current?.abort();
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
     },
     [],
   );
 
-  const toggleMute = useCallback(() => {
-    setMuted((current) => {
-      const next = !current;
-      mutedRef.current = next;
-      if (next) pauseListening();
-      else if (phaseRef.current === 'live' && !speaking) beginListening();
-      return next;
-    });
-  }, [beginListening, pauseListening, speaking]);
+  /** Push-to-talk toggle. Disabled while SAGE is speaking, so it never hears itself. */
+  const toggleRecording = useCallback(() => {
+    if (recordingRef.current) stopRecording();
+    else startRecording();
+  }, [startRecording, stopRecording]);
 
   const statusText = useMemo(() => {
     if (phase === 'idle') return t('ready');
     if (phase === 'connecting') return t('connecting');
     if (phase === 'ended') return t('callEnded');
+    if (recording) return t('recording');
     if (speaking) return t('speaking');
     if (streaming) return t('thinking');
-    if (muted) return t('muted');
-    return t('listening');
-  }, [muted, phase, speaking, streaming, t]);
+    return t('ready');
+  }, [phase, recording, speaking, streaming, t]);
 
   const pulse: 'none' | 'listening' | 'speaking' =
-    phase !== 'live' ? 'none' : speaking ? 'speaking' : streaming || muted ? 'none' : 'listening';
+    phase !== 'live' ? 'none' : speaking ? 'speaking' : recording ? 'listening' : 'none';
 
   const sendTyped = useCallback(() => {
     const text = draft.trim();
@@ -411,19 +479,10 @@ export default function CallScreen() {
     if (!speechRef.current) {
       speechRef.current = new SpeechQueue(language, statusQuery.data?.default_voice, (value) => {
         setSpeaking(value);
-        if (value) pauseListening();
-        else if (!mutedRef.current && phaseRef.current === 'live') beginListening();
       });
     }
     runAssistantTurn({ message: text });
-  }, [
-    beginListening,
-    draft,
-    language,
-    pauseListening,
-    runAssistantTurn,
-    statusQuery.data?.default_voice,
-  ]);
+  }, [draft, language, runAssistantTurn, statusQuery.data?.default_voice]);
 
   const firstName = session.user?.first_name ?? session.user?.full_name ?? '';
 
@@ -469,10 +528,14 @@ export default function CallScreen() {
             <>
               <Button label={t('hangup')} variant="hangup" onPress={hangUp} />
               <Button
-                label={muted ? t('unmute') : t('mute')}
-                variant="secondary"
-                icon={muted ? 'mic-off' : 'mic'}
-                onPress={toggleMute}
+                // Push-to-talk: tap to open the mic, tap again to stop and send.
+                label={recording ? t('stopRecording') : t('record')}
+                variant={recording ? 'primary' : 'secondary'}
+                icon={recording ? 'stop' : 'mic'}
+                onPress={toggleRecording}
+                disabled={speaking}
+                accessibilityHint={t('recordHint')}
+                testID="record-toggle"
               />
             </>
           )}
@@ -518,7 +581,7 @@ export default function CallScreen() {
             </View>
           ))}
 
-          {partial ? (
+          {captured || partial ? (
             <View style={{ alignItems: 'flex-end', opacity: 0.65 }}>
               <AppText variant="badge" color={theme.textMeta} style={{ marginBottom: space(1) }}>
                 {t('you')}
@@ -533,7 +596,7 @@ export default function CallScreen() {
                 }}
               >
                 <AppText variant="transcript" color={theme.bubbleUserText}>
-                  {partial}
+                  {[captured, partial].filter(Boolean).join(' ')}
                 </AppText>
               </View>
             </View>

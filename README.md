@@ -107,6 +107,23 @@ src/
 | Location ping | `hooks/useLocationPing.ts` | 5 s cadence, skip in-flight, pause in background, stop permanently on denial or `403` |
 | Call speech | `lib/speech.ts`, `app/call.tsx` | speak **one segment per tool boundary**, never per delta (see below) |
 
+### How call mode records
+
+Call mode is **push-to-talk**, not ambient listening:
+
+1. Tap **Record** — the microphone opens and everything you say accumulates
+2. Tap **Stop & send** — the recogniser finalises, then **one** message is sent
+3. Nothing is sent before that tap, and an empty recording sends nothing
+
+The recogniser reports results *after* `stop()` is called, so the send waits for
+the engine's `end` event rather than firing in the tap handler. A 1.5 s safety
+timer sends whatever was captured if the platform never signals the end (some
+Android recognisers do not). Continuous mode can emit several finals for one
+utterance, so `onFinal` only accumulates — sending there would split a sentence.
+
+The Record button is disabled while SAGE is speaking, so the microphone never
+hears its own voice. Hanging up discards an in-progress recording.
+
 ### How call-mode speech is segmented
 
 `POST /api/voice/speak` is called with a **whole segment**, not a sentence:

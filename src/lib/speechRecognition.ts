@@ -98,9 +98,11 @@ export function startRecognition(language: 'en' | 'ar'): void {
       // Call-mode Arabic is Egyptian colloquial, matching the persona (§6.2).
       lang: language === 'ar' ? 'ar-EG' : 'en-US',
       interimResults: true,
-      continuous: false,
+      // Push-to-talk: keep listening until the user taps Stop, so a pause
+      // mid-thought does not end the recording.
+      continuous: true,
       requiresOnDeviceRecognition: false,
-      addsPunctuation: false,
+      addsPunctuation: true,
     });
   } catch {
     // A missing native module must never crash the call screen.
