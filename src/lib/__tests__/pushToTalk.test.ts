@@ -9,17 +9,19 @@
 type Session = {
   recording: boolean;
   captured: string;
+  partial: string;
   pendingSend: boolean;
   sent: string[];
 };
 
 function createSession(): Session {
-  return { recording: false, captured: '', pendingSend: false, sent: [] };
+  return { recording: false, captured: '', partial: '', pendingSend: false, sent: [] };
 }
 
 /** Mirrors `startRecording` in `src/app/call.tsx`. */
 function startRecording(session: Session) {
   session.captured = '';
+  session.partial = '';
   session.pendingSend = false;
   session.recording = true;
 }
@@ -29,15 +31,29 @@ function onFinal(session: Session, transcript: string) {
   const text = transcript.trim();
   if (!text) return;
   session.captured = session.captured ? `${session.captured} ${text}` : text;
+  session.partial = '';
 }
 
-/** Mirrors `flushRecording`: send at most once, then reset. */
+/** Mirrors `onPartial`: remember the latest interim transcript. */
+function onPartial(session: Session, transcript: string) {
+  session.partial = transcript;
+}
+
+/**
+ * Mirrors `flushRecording`: send at most once, then reset. Falls back to the
+ * latest partial when the recogniser never marked a result final.
+ */
 function flush(session: Session, force = false) {
   if (!session.pendingSend) return;
   if (!force && session.recording) return;
   session.pendingSend = false;
-  const text = session.captured.trim();
+
+  const finals = session.captured.trim();
+  const fallback = session.partial.trim();
+  const text = finals || fallback;
+
   session.captured = '';
+  session.partial = '';
   if (!text) return;
   session.sent.push(text);
 }
@@ -163,8 +179,90 @@ describe('push-to-talk', () => {
     session.recording = false;
     session.pendingSend = false;
     session.captured = '';
+    session.partial = '';
 
     flush(session);
+    expect(session.sent).toEqual([]);
+  });
+});
+
+describe('partial-only recordings (the reported bug)', () => {
+  /**
+   * Reported symptom: tap Record, speak, tap Stop — nothing sent.
+   *
+   * Cause: the code accumulated only `isFinal` results, but short Android
+   * utterances often never produce one, so the buffer was empty while the words
+   * were visible in the live preview. The latest partial is now the fallback.
+   */
+  it('sends the latest partial when no final ever arrives', () => {
+    const session = createSession();
+    startRecording(session);
+
+    onPartial(session, 'I want to book');
+    onPartial(session, 'I want to book a dentist');
+    onPartial(session, 'I want to book a dentist appointment');
+
+    stopRecording(session);
+    flush(session, true); // safety timer
+
+    expect(session.sent).toEqual(['I want to book a dentist appointment']);
+  });
+
+  it('prefers the final over the partial', () => {
+    const session = createSession();
+    startRecording(session);
+    onPartial(session, 'Book me a dentist appoi');
+    onFinal(session, 'Book me a dentist appointment.');
+
+    stopRecording(session);
+    flush(session);
+
+    expect(session.sent).toEqual(['Book me a dentist appointment.']);
+  });
+
+  it('sends once when the final arrives after end', () => {
+    const session = createSession();
+    startRecording(session);
+    onPartial(session, 'Partial words here');
+
+    stopRecording(session);
+    // `end` fires first, inside the grace window; then the final lands.
+    onFinal(session, 'Final words here');
+    flush(session);
+
+    expect(session.sent).toEqual(['Final words here']);
+  });
+
+  it('sends exactly once when both end and final trigger a flush', () => {
+    const session = createSession();
+    startRecording(session);
+    onFinal(session, 'Hello there');
+    stopRecording(session);
+
+    flush(session); // from `end`
+    flush(session); // from the trailing final
+    flush(session, true); // safety timer
+
+    expect(session.sent).toEqual(['Hello there']);
+  });
+
+  it('sends nothing when there was no partial and no final', () => {
+    const session = createSession();
+    startRecording(session);
+    stopRecording(session);
+    flush(session, true);
+
+    expect(session.sent).toEqual([]);
+  });
+
+  it('does not send a partial recorded before the recording started', () => {
+    const session = createSession();
+    onPartial(session, 'stale words from a previous session');
+
+    startRecording(session); // clears the partial
+    stopRecording(session);
+    flush(session, true);
+
     expect(session.sent).toEqual([]);
   });
 });

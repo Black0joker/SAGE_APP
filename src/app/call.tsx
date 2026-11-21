@@ -139,10 +139,14 @@ export default function CallScreen() {
   const phaseStoppedRef = useRef(false);
   /** Finals accumulated during the current recording, in order. */
   const sessionTextRef = useRef('');
+  /** Latest interim transcript, used as a fallback when no final ever arrives. */
+  const partialRef = useRef('');
   /** Set when the user taps Stop: the next final/end must send the buffer. */
   const pendingSendRef = useRef(false);
   /** Safety net for recognizers that never emit a final after stop. */
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Short grace window so a trailing final can land before we send. */
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const statusQuery = useQuery({ queryKey: keys.voiceStatus, queryFn: () => voice.status() });
 
@@ -260,6 +264,15 @@ export default function CallScreen() {
     [language, updateAssistantTurn],
   );
 
+  /** Dev-only recogniser trace. Lengths only — never the spoken text (API.md §12.7). */
+  const logStt = useCallback((stage: string, detail: Record<string, string | number | boolean>) => {
+    if (!__DEV__) return;
+    const fields = Object.entries(detail)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(' ');
+    console.log(`[stt] ${stage} ${fields}`.trim());
+  }, []);
+
   const handleFinalSpeech = useCallback((transcript: string) => {
     const text = transcript.trim();
     if (!text) return;
@@ -267,56 +280,95 @@ export default function CallScreen() {
     sessionTextRef.current = sessionTextRef.current ? `${sessionTextRef.current} ${text}` : text;
     setCaptured(sessionTextRef.current);
     setPartial('');
+    partialRef.current = '';
   }, []);
 
   /**
    * Sends whatever has been captured, exactly once, then resets the session.
    *
+   * Prefers the accumulated finals, but falls back to the latest partial: some
+   * Android recognisers never mark a result final for a short utterance, so a
+   * recording could otherwise be discarded while the words were on screen.
+   *
    * `force` is used by the safety timer, which must send even if the engine never
    * signals the end of the utterance.
    */
-  const flushRecording = useCallback((force = false) => {
-    if (!pendingSendRef.current) return;
-    if (!force && recordingRef.current) return;
-    pendingSendRef.current = false;
+  const flushRecording = useCallback(
+    (force = false) => {
+      if (!pendingSendRef.current) return;
+      if (!force && recordingRef.current) return;
+      pendingSendRef.current = false;
 
-    if (sendTimerRef.current) {
-      clearTimeout(sendTimerRef.current);
-      sendTimerRef.current = null;
-    }
+      if (sendTimerRef.current) {
+        clearTimeout(sendTimerRef.current);
+        sendTimerRef.current = null;
+      }
+      if (graceTimerRef.current) {
+        clearTimeout(graceTimerRef.current);
+        graceTimerRef.current = null;
+      }
 
-    const text = sessionTextRef.current.trim();
-    sessionTextRef.current = '';
-    setCaptured('');
-    setPartial('');
-    if (!text) return; // nothing was said: send nothing
+      const finals = sessionTextRef.current.trim();
+      const fallback = partialRef.current.trim();
+      const text = finals || fallback;
 
-    setTurns((current) => [...current, { id: nextTurnId(), role: 'user', content: text }]);
-    runAssistantTurn({ message: text });
-  }, [runAssistantTurn]);
+      logStt('flush', {
+        source: finals ? 'final' : fallback ? 'partial' : 'empty',
+        finals: finals.length,
+        partial: fallback.length,
+      });
+
+      sessionTextRef.current = '';
+      partialRef.current = '';
+      setCaptured('');
+      setPartial('');
+      if (!text) return; // nothing was said: send nothing
+
+      logStt('send', { chars: text.length });
+      setTurns((current) => [...current, { id: nextTurnId(), role: 'user', content: text }]);
+      runAssistantTurn({ message: text });
+    },
+    [logStt, runAssistantTurn],
+  );
 
   const startRecording = useCallback(() => {
     if (phaseRef.current !== 'live' || speaking) return;
     sessionTextRef.current = '';
+    partialRef.current = '';
     pendingSendRef.current = false;
     setCaptured('');
     setPartial('');
     setRecording(true);
     recordingRef.current = true;
+    logStt('start', { lang: language });
     startRecognition(language);
-  }, [language, speaking]);
+  }, [language, logStt, speaking]);
 
   const stopRecording = useCallback(() => {
     if (!recordingRef.current) return;
     setRecording(false);
     recordingRef.current = false;
-    // Ask the engine to finalise; the result arrives asynchronously in `onFinal`.
+    // Ask the engine to finalise; the result arrives asynchronously.
     pendingSendRef.current = true;
+    logStt('stop', { partial: partialRef.current.length, finals: sessionTextRef.current.length });
     stopRecognition();
 
     // Some Android recognizers never emit a final after stop, so never hang.
     if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
-    sendTimerRef.current = setTimeout(() => flushRecording(true), 1500);
+    sendTimerRef.current = setTimeout(() => {
+      logStt('timeout', { waited: 1500 });
+      flushRecording(true);
+    }, 1500);
+  }, [flushRecording, logStt]);
+
+  /** Sends after a short grace window, so a trailing final can still arrive. */
+  const scheduleFlush = useCallback(() => {
+    if (!pendingSendRef.current) return;
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    graceTimerRef.current = setTimeout(() => {
+      graceTimerRef.current = null;
+      flushRecording();
+    }, 250);
   }, [flushRecording]);
 
   useEffect(() => {
@@ -324,21 +376,32 @@ export default function CallScreen() {
 
     const unsubscribe = addRecognitionListeners({
       onEnd: () => {
+        logStt('end', {
+          recording: recordingRef.current,
+          pending: pendingSendRef.current,
+          finals: sessionTextRef.current.length,
+          partial: partialRef.current.length,
+        });
         // Push-to-talk: resume only while the user is still recording.
         if (recordingRef.current) {
           setTimeout(() => {
             if (recordingRef.current) startRecognition(language);
           }, 300);
-        } else if (pendingSendRef.current) {
-          // The engine finished: send everything captured for this utterance.
-          flushRecording();
+        } else {
+          // A trailing final often lands just after `end`, so wait briefly.
+          scheduleFlush();
         }
       },
-      onPartial: (transcript) => setPartial(transcript),
+      onPartial: (transcript) => {
+        partialRef.current = transcript;
+        setPartial(transcript);
+      },
       onFinal: (transcript) => {
+        logStt('result', { isFinal: true, len: transcript.length });
         handleFinalSpeech(transcript);
-        // Do NOT send here: continuous mode can emit several finals for one
-        // utterance. The send happens on `onEnd`, or via the safety timer.
+        // Continuous mode can emit several finals; the grace window collapses
+        // them into one send without dropping a trailing one.
+        scheduleFlush();
       },
       onError: (code) => {
         if (code.includes('not-allowed') || code.includes('permission')) {
@@ -355,15 +418,18 @@ export default function CallScreen() {
         // Stop cleanly, keeping whatever was already captured.
         setRecording(false);
         recordingRef.current = false;
+        // A stop may still be waiting for text; send what we have.
+        scheduleFlush();
       },
     });
 
     return unsubscribe;
-  }, [flushRecording, handleFinalSpeech, language, phase, t]);
+  }, [handleFinalSpeech, language, logStt, phase, scheduleFlush, t]);
 
   useEffect(
     () => () => {
       if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
     },
     [],
   );
@@ -417,9 +483,14 @@ export default function CallScreen() {
     // Discard an in-progress recording: a hung-up call must not send it.
     pendingSendRef.current = false;
     sessionTextRef.current = '';
+    partialRef.current = '';
     if (sendTimerRef.current) {
       clearTimeout(sendTimerRef.current);
       sendTimerRef.current = null;
+    }
+    if (graceTimerRef.current) {
+      clearTimeout(graceTimerRef.current);
+      graceTimerRef.current = null;
     }
     setRecording(false);
     recordingRef.current = false;
@@ -441,6 +512,7 @@ export default function CallScreen() {
       abortRecognition();
       streamRef.current?.abort();
       if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
     },
     [],
   );
