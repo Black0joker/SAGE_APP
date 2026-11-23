@@ -17,5 +17,7 @@ export const keys = {
   invitations: ['trusted', 'invitations'] as const,
   watching: ['trusted', 'watching'] as const,
   peek: (contactId: string) => ['trusted', 'peek', contactId] as const,
+  documents: ['documents'] as const,
+  document: (id: string) => ['documents', id] as const,
   voiceStatus: ['voice', 'status'] as const,
 };

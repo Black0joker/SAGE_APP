@@ -17,7 +17,13 @@ export type RequestOptions = {
 };
 
 /** Bodies and paths we must never echo to a log. */
-const REDACTED_PATHS = [/^\/api\/auth\//, /^\/api\/location/, /^\/api\/voice\//];
+const REDACTED_PATHS = [
+  /^\/api\/auth\//,
+  /^\/api\/location/,
+  /^\/api\/voice\//,
+  // A document id is a handle to personal data; never print it (API.md §13.9).
+  /^\/api\/documents/,
+];
 
 function isRedacted(path: string): boolean {
   return REDACTED_PATHS.some((pattern) => pattern.test(path));

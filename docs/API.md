@@ -1,13 +1,15 @@
 # SAGE — HTTP API Reference
 
 Every endpoint the SAGE web app uses, exactly as implemented in `app.py` (with
-`auth.py`, `memory.py`, `conversations.py`, `schedule.py`, `places.py`, `trusted.py`,
-`voice.py`). Written so a React Native client can be built against it without reading
-the Flask code.
+`auth.py`, `memory.py`, `documents.py`, `conversations.py`, `schedule.py`,
+`places.py`, `trusted.py`, `voice.py`). Written so a React Native client can be
+built against it without reading the Flask code.
 
-Companion document: [`DESIGN.md`](./DESIGN.md) — screens, tokens, and native porting notes.
+Companion documents: [`DESIGN.md`](./DESIGN.md) — screens, tokens, and native
+porting notes; [`DOCUMENTS.md`](./DOCUMENTS.md) — the PDF upload and search feature
+in depth.
 
-- **55 routes**: 9 HTML page routes + 46 API routes (2 of them public: register and login).
+- **60 routes**: 10 HTML page routes + 50 API routes (2 of them public: register and login).
 - **Base URL** in local dev: `http://127.0.0.1:5000` (override with `PORT`).
 - All API paths are under `/api/`.
 
@@ -66,6 +68,7 @@ GET  /login, /register     → HTML
 GET  /chat, /call          → HTML shells (data-free; the browser fetches with a token)
 GET  /settings, /memory    → HTML shells
 GET  /schedule, /trusted   → HTML shells
+GET  /documents            → HTML shell
 GET  /favicon.ico
 GET  /static/*
 POST /api/auth/register
@@ -178,6 +181,15 @@ Body:
 | `mode` | `chat` (default) or `call` (caps the reply at 220 tokens) |
 | `greeting` | call mode only: with no messages, inserts a synthetic user turn so the assistant opens the call |
 | `conversation_id` | optional; ignored if it isn't the caller's thread |
+
+> **Call mode and `conversation_id`.** The call page sends the `messages` array
+> (it keeps its own in-memory history) *and* the `conversation_id` it received in
+> `X-Conversation-ID` on its first turn. Omitting the id is not an error, but the
+> server then starts a **new** thread on every request, which fragments the
+> transcript into one conversation per turn. Keep the id for the duration of a
+> call. The page also trims its array to the last 20 turns, because a `messages`
+> array past 50 items is rejected with `400 invalid_request` — the cap that used
+> to end long calls permanently.
 
 When `message` is present, client-supplied `messages` are **ignored on purpose** — a
 modified client must not be able to inject assistant turns.
@@ -670,14 +682,103 @@ refuses, so the flag leaks nothing.
 
 ---
 
-## 9. Voice
+## 9. Documents
+
+Upload a PDF, then ask about it in chat: the model calls these tools itself.
+There is no user-facing search endpoint. Full feature documentation:
+[`DOCUMENTS.md`](./DOCUMENTS.md).
+
+### 9.1 `GET /api/documents` — my uploaded documents
+
+```json
+{ "documents": [
+  { "id": "3ac26371-…", "name": "Lease.pdf", "page_count": 12,
+    "chunk_count": 34, "size_bytes": 2411724, "created_at": "2026-11-23T20:09:14Z" } ] }
+```
+
+Newest first. `sha256` is never returned.
+
+### 9.2 `POST /api/documents` — upload and index (SSE)
+
+`multipart/form-data` with one field, `file`. The reply's content type decides the
+outcome:
+
+| Result | Content type | Body |
+| --- | --- | --- |
+| indexing a new document | `text/event-stream` | progress frames, then `done`, then `[DONE]` (§9.2.1) |
+| the same bytes already uploaded | `application/json` | `200 {document, duplicate: true}` |
+| missing field, not a PDF, damaged, encrypted, over 400 pages | `application/json` | `400 invalid_request` |
+| body over 20 MB | `application/json` | `413 payload_too_large` |
+
+```text
+data: {"progress":{"stage":"extracting","done":12,"total":300}}
+
+data: {"progress":{"stage":"chunking","done":640,"total":640}}
+
+data: {"progress":{"stage":"indexing","done":200,"total":640}}
+
+data: {"done":{"document":{"id":"…","name":"Lease.pdf","page_count":300,
+                           "chunk_count":640,"size_bytes":2411724,
+                           "created_at":"2026-11-23T20:09:14Z"},
+               "created":true}}
+
+data: [DONE]
+```
+
+- `stage` is `extracting` (one frame per page), `chunking`, or `indexing` (one
+  frame per 100 chunks). `total: 0` means the length is not known yet.
+- The response sets `X-Accel-Buffering: no` so a reverse proxy does not buffer it.
+- **Only a PDF with no extractable text (a scan) arrives as an error frame**, with
+  `{"error":{"code":"invalid_request","message":"…scan…"}}`. Everything else that
+  can go wrong is knowable before the stream starts and is reported with a status
+  instead — a started response can no longer send one.
+- Adopt `done.document` rather than refetching the list. If the stream ends with
+  neither `done` nor `error`, the indexing did not finish: show an error, not a
+  success.
+- A document is written only if extraction and chunking both succeed, and the row,
+  its chunks, and its index entries commit together. Disconnecting mid-stream
+  leaves nothing behind.
+
+### 9.3 `GET /api/documents/<document_id>` — one document with page previews
+
+```json
+{ "document": { "id": "…", "name": "Lease.pdf", "page_count": 12,
+                "chunk_count": 34, "size_bytes": 2411724, "created_at": "…",
+                "pages": [ { "page": 1, "preview": "TENANCY AGREEMENT…" } ] } }
+```
+
+`404 not_found` for an unknown id **or another account's document**.
+
+### 9.4 `DELETE /api/documents/<document_id>` — hard delete
+
+`204`, or `404`. Removes the document, its chunks, and its full-text index rows.
+There is no soft delete and no retention copy.
+
+### 9.5 Agent tools
+
+Offered to the model on the chat and call routes, never called by the UI:
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `list_documents` | `limit` 1–200 (default 50) | `{documents, count}` |
+| `search_documents` | `query` (required, ≤300), `document_id?`, `limit` 1–20 (default 6) | `{results: [{document_id, document_name, page, text}], count}` |
+| `read_document` | `document_id`, `start_page?`, `end_page?` | `{document_id, document_name, page_count, start_page, end_page, text}` |
+
+Each passage is at most 900 characters; `read_document` returns at most 20 pages
+and 8,000 characters. Every handler binds the user id server-side and drops a
+model-supplied `user_id`. Matching is **lexical (FTS5 + BM25)**, not embeddings —
+the gateway serves no `/v1/embeddings`.
+
+---
+
+## 10. Voice
 
 ### 9.1 `GET /api/voice/status`
 
 ```json
 { "configured": true, "available": true, "expired": false,
   "expires_at": "2026-11-20T10:41:07Z", "reason": "refresh",
-  "refresh_configured": true,
+  "refresh_configured": true, "token_source": "refresh", "manual_token": false,
   "voices": ["arabic", "george", "host", "owl"],
   "default_voice": "owl",
   "model": "eleven_v4_exp" }
@@ -685,8 +786,16 @@ refuses, so the flag leaks nothing.
 
 Call `available` before enabling call mode. `reason` explains the state: `refresh`,
 `ok`, `opaque`, `missing`, `expired`, or a voice error code such as
-`voice_token_expired`. `voice_expired` in `reason` means a refreshed token was still
-rejected. No token material is ever returned.
+`voice_token_expired` / `voice_quota_exceeded`. `voice_expired` in `reason` means a
+refreshed token was still rejected.
+
+`token_source` (`manual`, `cache`, `refresh`) and `manual_token` are diagnostics: a
+configured `ELEVENLABS_TOKEN` wins over a working refresh token, so this is how you tell
+which credential is actually in play. No token material is ever returned.
+
+> `reason: "voice_quota_exceeded"` means the **token is fine** and the ElevenLabs account
+> is out of credits. ElevenLabs signals that with a `401`, so do not render it as an
+> expired session. The state clears itself on the next successful request.
 
 ### 9.2 `POST /api/voice/speak`
 
@@ -702,6 +811,8 @@ time (assistant text between tool calls). `language: "ar"` selects the Arabic vo
 | `voice_invalid_request` (missing text, unknown voice) | `400` |
 | `voice_text_too_long` (over 4 000 characters) | `400` |
 | `voice_token_missing` / `voice_token_expired` | `503` |
+| `voice_quota_exceeded` (the account is out of credits; the message carries ElevenLabs' own figures) | `503` |
+| `voice_account_restricted` (free-tier / unusual-activity restriction) | `503` |
 | `voice_upstream_error` | `502` |
 
 Server-side details: segments over the provider's 2 000-character limit are split with
@@ -711,7 +822,7 @@ history.
 
 ---
 
-## 10. Limits and constants
+## 11. Limits and constants
 
 | Constant | Value | Where |
 | --- | --- | --- |
@@ -728,15 +839,18 @@ history.
 | Place radius | 10 – 50 000 m (default 150) | `POST /api/places` |
 | `tz_offset` | −840 … 840 minutes east of UTC | `GET /api/appointments/today` |
 | Voice text | ≤ 4 000 chars request; 2 000 per provider chunk | `POST /api/voice/speak` |
+| Document upload | 20 MB, 400 pages, 4 000 chunks per file | `POST /api/documents` |
+| Document search | default 6, max 20 passages; query ≤ 300 chars | `search_documents` tool |
+| Document read | ≤ 20 pages and 8 000 chars per call | `read_document` tool |
 | Inactivity warning | 24 h | `GET /api/trusted/people/<id>` |
 | JWT TTL | 7 days (`JWT_TTL_DAYS`) | auth |
 | Name / email / password | 60 / 254 / 8–128 chars | auth |
 
 ---
 
-## 11. TypeScript client
+## 12. TypeScript client
 
-### 11.1 Core types
+### 12.1 Core types
 
 ```ts
 export type PublicUser = {
@@ -804,7 +918,7 @@ export type LocationContext = {
 };
 ```
 
-### 11.2 Client with 401 handling
+### 12.2 Client with 401 handling
 
 ```ts
 import * as SecureStore from 'expo-secure-store';
@@ -877,7 +991,7 @@ export function createApi(baseUrl: string, onUnauthorized: () => void) {
 }
 ```
 
-### 11.3 Streaming chat
+### 12.3 Streaming chat
 
 ```ts
 export type StreamEvent =
@@ -955,7 +1069,7 @@ Send flow to mirror the web app:
 5. On `stopped`, remove **both** bubbles and put the text back in the composer.
 6. On error frames, mark the assistant bubble as an error (keep the user bubble).
 
-### 11.4 Location ping
+### 12.4 Location ping
 
 ```ts
 import * as Location from 'expo-location';
@@ -992,7 +1106,7 @@ export function startLocationPing(api: ReturnType<typeof createApi>, onContext: 
 }
 ```
 
-### 11.5 Voice playback
+### 12.5 Voice playback
 
 ```ts
 export async function speak(baseUrl: string, token: string, text: string, language: 'en' | 'ar', voice?: string) {
@@ -1015,7 +1129,7 @@ segment in order, and pause speech recognition while a segment plays.
 
 ---
 
-## 12. Privacy rules the client must not break
+## 13. Privacy rules the client must not break
 
 These are enforced server-side; the client should not fight them.
 
@@ -1036,10 +1150,14 @@ These are enforced server-side; the client should not fight them.
    tokens. The app only ever holds the SAGE JWT.
 8. **`DELETE /api/memory` needs `{"confirm": true}`** — keep a real
    confirmation dialog in front of it.
+9. **Uploaded documents are personal data.** Document text and filenames are never
+   logged, and the upload's progress frames carry `stage`/`done`/`total` only —
+   never text or a filename. Deleting a document is a hard delete, and another
+   account's document id answers `404`, so an id is never a way in.
 
 ---
 
-## 13. Environment variables that change API behaviour
+## 14. Environment variables that change API behaviour
 
 | Variable | Default | Effect on this API |
 | --- | --- | --- |

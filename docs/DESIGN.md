@@ -271,14 +271,14 @@ Nav tab row (below `lg`): 4 equal columns, 48px tall on phones (icon over 10px l
 `rounded-xl`), switching to inline pills (36px, icon + 12px label, `rounded-full`,
 1px border) from `sm`. Tap targets stay ≥ 44px on phones.
 
-### 3.3 Content pages (memory, schedule, trusted, settings)
+### 3.3 Content pages (memory, schedule, trusted, documents, settings)
 
 Same shell, no composer. Main is `px-4 py-6` (24px at `sm`) with 20px vertical gaps
 between **section cards** (`rounded-2xl`, 1px border, 20/24px padding, title 18px +
 14px hint).
 
 Header for these pages: back-arrow link → 32px `spa` tile → `SAGE`, and on the right
-the theme toggle (memory/schedule/trusted) or language + theme (settings).
+the theme toggle (memory/schedule/trusted/documents) or language + theme (settings).
 
 ### 3.4 Auth pages (`/login`, `/register`)
 
@@ -343,7 +343,7 @@ hint text        ← 12px, brand-500 / sand-400
 | Voice unavailable banner | warning yellow above | `role="status" aria-live="polite"` |
 | Place context / reminder | full-width band under the header | `role="status"` |
 
-### 4.4 List row (memory, schedule, trusted)
+### 4.4 List row (memory, schedule, trusted, documents)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -360,10 +360,20 @@ hint text        ← 12px, brand-500 / sand-400
 
 ### 4.5 Consent toggle (memory page)
 
-A row: label on the left, a pill button on the right that reads **On** (granted,
-`brand-100`/`brand-800`) or **Off** (not granted, `sand-100`/`brand-600`). Tapping
+A row: label on the left, a **switch** on the right — a 44×24px pill with a sliding
+knob, followed by the word **On** (granted) or **Off** (not granted). Tapping
 `PUT`s the new value and re-renders from the response. Explanatory hint above the
 list: *"Turn these off at any time. Nothing is shared without your permission."*
+
+- The button carries `role="switch"` and `aria-checked`, so the state is exposed to
+  assistive tech without reading the label text.
+- **The knob is the affordance, the word is the contract.** Colour and position
+  alone would be the only signal without the text, which breaks the rule that a
+  toggle reads its state in words.
+- The knob slides 20px with `--dur-base` / `--ease-pop`; under reduced motion the
+  transition is removed and the state jumps, which is correct for a switch.
+- On the trusted page the same control sits inside a pill with `sharing on` /
+  `sharing off` as its words.
 
 Kinds shown: **Location** (`location`), **Voice replies** (`voice`),
 **Share memory with trusted people** (`memory_sharing`), **Familiar voice**
@@ -386,17 +396,24 @@ Kinds shown: **Location** (`location`), **Voice replies** (`voice`),
 | --- | --- |
 | Row | `max-width: 85%`, 12px gap; user rows right-aligned, assistant left-aligned |
 | Avatar | 32px gradient circle, `spa` icon at 16px, assistant rows only; 2px top offset |
-| Bubble | 12/16px padding, 16px radius, 15px/1.65 text, `white-space: pre-wrap`, `overflow-wrap: anywhere`, 4px squared corner on the sender's side |
+| Bubble | 12/16px padding, **18px radius**, 15px/1.65 text, `white-space: pre-wrap`, `overflow-wrap: anywhere`, 4px squared corner on the sender's side; assistant bubbles carry a 1px hairline border, user bubbles a 160° gradient (`#145243 → #0f3d33`, pale mint in dark mode) |
 | Meta | 12px timestamp + hover/tap delete button; user meta right-aligned |
 | Delete button | trash icon; **always visible on touch devices** (hover media query) |
 | Typing indicator | three 6px dots bouncing, 1.2s loop (disabled under reduced motion) |
 | Streaming caret | inline `▍` appended via `.is-streaming`, blinking 1s |
 | Tool activity | one transient line under the bubble: *Saving memory…*, *Searching memory…*, *Memory saved*, *Memory searched*, *Memory tool failed*, *Using tool…*, *Checking your account…*, *Account checked*. Tool **names/status only** — never arguments or results. Clears when answer text starts, or expires 1.4s after a tool ends. |
 | Welcome bubble | assistant bubble with a personalized greeting; hidden once the thread is non-empty |
+| Starter chips | three pill buttons under the greeting (*What's on today?*, *Remember that...*, *What do you remember about me?*). Tapping **fills the composer** — it never auto-sends — and they hide once the thread has a message |
+| Jump-to-latest | 30px pill above the composer, visible only while the reader is scrolled up. Tap scrolls smoothly to the newest message |
 | Error bubble | red bubble replacing an answer that failed |
 
-Empty thread = the welcome bubble only. Long threads scroll inside the thread region;
-the app auto-scrolls to the newest bubble on each delta.
+Empty thread = the welcome bubble plus the starter chips. Long threads scroll inside
+the thread region.
+
+**Scroll policy:** streaming follows the reply only while the reader is within ~120px of
+the end; otherwise the view stays put and the jump pill appears. Sending a message
+always jumps to the newest bubble. Scrolls are instant for streamed deltas and smooth
+only for the explicit jump — never animate every token.
 
 ### 4.8 Composer (chat and call)
 
@@ -411,9 +428,12 @@ the app auto-scrolls to the newest bubble on each delta.
   + 2px `brand-600/15` ring, 10px padding.
 - Textarea autosizes from 1 row up to **144px**, no visible scrollbar; Enter sends,
   Shift+Enter inserts a newline; call-screen placeholder is *"Type instead of speaking…"*.
-- `Clear` (chat only) = clear the whole conversation; label hidden below `sm`.
-- `Stop` appears while streaming (chat only).
-- Send button is a 36px filled circle; disabled at 40% opacity.
+- `Clear` (chat only) = clear the whole conversation; label hidden below `sm`. It asks
+  for confirmation in the shared dialog, whose copy notes that saved memories stay.
+- **One action slot:** while a reply streams, `Send` hides and `Stop` takes its place;
+  when the turn ends the swap reverses. Two competing buttons never show at once.
+- Send button is a 36px filled circle with a 150° brand gradient; disabled at 40% opacity;
+  hovering lifts it 1px with a soft glow.
 - Status line shows *Thinking…* while busy and clears afterwards.
 
 ### 4.9 Call screen
@@ -431,13 +451,123 @@ the app auto-scrolls to the newest bubble on each delta.
 ```
 
 - Orb: 104px gradient circle with `spa` at 36px; `listening` pulse 1.6s, `speaking`
-  pulse 1.1s (ring expanding 0 → 18px, fading). Disabled under reduced motion.
+  pulse 1.1s (ring expanding 0 → 18px, fading). Before the call starts it **breathes**
+  on a slow 4.5s scale, so the idle stage is not a dead circle; the slower cadence also
+  keeps it visually distinct from the listening pulse. All three are disabled under
+  reduced motion.
 - Buttons appear progressively: `Start call` → `Hang up` + `Mute` once the call is live.
 - Transcript bubbles mirror the chat bubbles (assistant tinted, user filled) with a
   small uppercase speaker label; a pending (not yet spoken) bubble is 65% opacity.
-- The voice banner explains *why* voice is off: not configured, token expired, mic
-  denied, no mic, unsupported language, network loss, or a browser that blocks the
-  speech service. Callers can always type.
+- The voice banner explains *why* voice is off: not configured, **credits used up**
+  (`reason: "voice_quota_exceeded"` — the token is fine, the ElevenLabs account is out of
+  credits), token expired, mic denied, no mic, unsupported language, network loss, or a
+  browser that blocks the speech service. Callers can always type.
+- **Speech-to-text is browser-side.** Audio never reaches the server; only the
+  recognised text is sent. Native must therefore supply its own STT — there is no
+  transcription endpoint to call.
+- The mic button reads `Mute`/`Unmute` from one state predicate
+  (running *or* starting *or* a restart is scheduled), and tapping it always
+  toggles, so a stalled recognizer can never leave the button inert. A start
+  that is rejected or never answers is retried rather than recorded as running.
+- A **plain-HTTP page cannot use the microphone** in any browser. Say that
+  explicitly (`micInsecure`) instead of "not supported in this browser", and
+  disable the mic; typing still works. Native has no such restriction, but the
+  same *specific reason* rule applies to every failure it surfaces.
+- **A recognizer failure never disables the mic button.** The button is the only
+  way to retry, so disabling it turns one transient error into a dead call. The
+  button stays pressable and gains a retry `title`; a tap clears the fatal state
+  and starts a fresh session.
+- **Voice input and voice output get separate banners.** `voice-banner` explains
+  ElevenLabs problems (no credits, expired token); `recognition-notice` explains
+  that the browser could not reach its own speech service. They are unrelated
+  failures and one must never hide the other.
+- **The status line must not lie.** "Listening…" is a claim about the
+  microphone: never show it while the recognizer is dead, and never leave a stale
+  "Speaking…" behind after the audio ends. When voice input fails, the status
+  line goes empty and the notice band carries the explanation.
+- If a call has produced no recognised text at all after ~10s, show a hint that
+  the microphone is on but nothing is being recognised. Never leave
+  "Listening…" as the only feedback for a recognizer that is not working.
+
+### 4.10 Motion
+
+One timing scale for the whole app (CSS custom properties in `static/style.css`):
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `--dur-fast` | 150ms | hover, press, alert dismissal |
+| `--dur-base` | 240ms | rows, banners, dialogs |
+| `--dur-slow` | 420ms | page entrance |
+| `--ease-standard` | `cubic-bezier(.2, .8, .2, 1)` | everything default |
+| `--ease-pop` | `cubic-bezier(.2, .9, .25, 1)` | dialogs, auth card |
+
+Named effects:
+
+| Class | Effect | Where |
+| --- | --- | --- |
+| `.anim-rise` | fade + 8px lift | list rows, empty states |
+| `.anim-slide-down` | fade + 6px drop | alerts, banners |
+| `.anim-pop` | scale-in | dialog card, auth card |
+| `.anim-bubble-in` | fade + 10px horizontal slide, directional | chat rows |
+| `.page-enter` | 420ms fade | `<main>` of every page |
+| `.empty-float` | fade + 6px drift | empty states |
+| `.tap-style` | `active:scale(.97)` | chips, tabs |
+| `.hover-lift` | 1px raise + soft shadow | cards, list rows (pointer only) |
+| `.switch` / `.switch-knob` | knob slides 20px | consent toggles |
+| `.is-thinking` | highlight sweeps the status text | composer status line |
+| `.brand-blob` | 18–26s drift | auth brand panel |
+| `.app-header.is-scrolled` | border + shadow seam | chat/call app bar |
+
+**Directional bubbles.** Assistant rows enter from the inline start, user rows from the
+end, so the direction of a message reads before its text does. CSS transforms are
+physical, not logical, so `[dir="rtl"]` swaps the two animations explicitly rather than
+relying on the class name.
+
+**The app bar separates on scroll.** `.is-scrolled` adds a hairline border plus a shadow
+once the thread has scrolled under it. A shadow alone is nearly invisible in dark mode,
+so the border is what actually carries the seam there.
+
+Lists with `.stagger-list` animate their rows 30ms apart, capped at 6 rows so long lists
+stay snappy. Only `transform` and `opacity` are animated.
+
+**Reduced motion is a hard requirement:** one `prefers-reduced-motion` block disables
+every entrance animation, the stagger delays, the skeleton shimmer, the typing dots, the
+stream caret, the call-orb pulse and idle breath, the jump-pill transition, the toggle
+knob transition, the hover lift and smooth scrolling. `.is-thinking` also drops
+`background-clip: text` there — turning the animation off without restoring a real colour
+would leave the text invisible. Any new animation must be added to that block;
+`tests/test_app.py::test_every_animation_respects_reduced_motion` parses both stylesheets
+and fails if a `@keyframes` is not neutralised, so this is enforced.
+
+### 4.11 Confirmation dialog
+
+Replaces `window.confirm` everywhere (clear conversation, delete memory item, forget
+everything, remove appointment/routine/place, revoke a trusted contact).
+
+- Centered card, max 22rem, 20px radius, `pop-in` entrance; backdrop `rgba(2,15,12,.45)`
+  with a 2px blur and a 120ms fade.
+- Title 16px/700; body 14px/1.6 (omitted when the copy is the question itself).
+- Actions: `Cancel` (`btn-secondary`) then the destructive action (`btn-danger`).
+- **Focus starts on Cancel for destructive actions** and on Confirm otherwise; Escape and
+  the backdrop cancel; Tab is trapped inside; focus returns to the trigger.
+- Implemented once in `static/ui.js` as `THUI.confirm({title, message, confirmLabel,
+  cancelLabel})` → `Promise<boolean>`. The copy comes from each page's `STRINGS` map.
+
+### 4.12 Loading and feedback
+
+- **Skeletons:** content pages show 2 shimmering placeholder rows per list while the
+  first fetch is in flight (`.skeleton-row` + `.skeleton-line`, 1.4s shimmer), so the
+  page never flashes "Nothing saved yet" before data arrives. Removed on error too.
+- **Success toasts:** success alerts slide in, then fade out on their own after **4.5s**
+  (`THUI.showSuccess`), instead of sitting there until the next action. Errors stay until
+  dismissed by the next action.
+- **Press feedback:** every tappable row/chip/tab uses `.tap-style` so touch users see a
+  state change, not just hover users.
+- **Progress bar** (`.progress-track` + `.progress-fill`): a determinate bar for work
+  that reports its own counts, currently only PDF indexing on `/documents`. The page
+  sets `width` on the fill; the 200ms width transition is neutralised under
+  `prefers-reduced-motion`. Show the stage label and `done / total` beside it, and
+  treat a `total` of 0 as indeterminate rather than inventing a percentage.
 
 ---
 
@@ -486,9 +616,12 @@ familiar-place banner → thread → composer → status line.
 | Stop | Send `POST /api/chat/stop {id: X-Stream-ID}`, then abort the local request; roll back **both** bubbles and restore the text to the composer. A stopped turn is deleted server-side |
 | Disconnect | Never a rollback: the server keeps the user turn and the partial reply |
 | Delete a message | `DELETE /api/conversations/<conversation_id>/turns/<turn_id>`; deleting a user turn also removes the assistant reply that followed it |
-| Clear | `DELETE /api/conversations` (clears **all** threads) — confirm first |
+| Clear | `DELETE /api/conversations` (clears **all** threads) — always through the confirmation dialog |
 | Banners | Appointment banner from `GET /api/appointments/today?tz_offset=`; place banner from the location ping (below) |
 | Greeting | `Hi, <first name>` in the header; the welcome bubble uses *Welcome, <name>! Ask me anything to get started.* |
+| Empty state | Welcome bubble + three starter chips that fill the composer; both disappear once a message exists |
+| Reading while streaming | The reply must not pull the view down. Follow only within ~120px of the end; otherwise show the jump pill |
+| Composer state | Send ↔ Stop swap in one slot; typing stays enabled while a reply streams |
 
 Location ping (chat and call only): every **5s**, `POST /api/location` with the current
 coordinates, skipping a tick while a request is in flight, pausing when the app is
@@ -580,6 +713,30 @@ claim that something is wrong.
 Header also carries the language toggle here. Success alerts per section
 (*Profile saved.* / *Password updated.*); password mismatch is caught client-side.
 
+### 5.10 `/documents` — PDFs SAGE can search
+
+1. **Add a PDF** — *Upload a PDF once, then just ask about it in chat. SAGE searches it
+   for you and cites the page.* A file input (`accept="application/pdf,.pdf"`) and an
+   `Upload` button. Client-side it rejects a non-PDF or an over-20 MB file before the
+   request.
+2. **Indexing progress** — the upload response is SSE, so the card shows a stage label
+   (*Extracting text…* / *Preparing passages…* / *Indexing…*), a `done / total` count, and
+   the `.progress-fill` bar. The bar completes and hides as the success alert appears.
+3. **Your documents** — one row per document: name, then `pages · passages · size · date`.
+   `Remove` is destructive and goes through `THUI.confirm`; it deletes the text from
+   the index.
+
+There is **no search field on this screen on purpose**. Searching is the model's job:
+the user asks in chat and the model calls the document tools itself. Do not add a
+query box here.
+
+The list is adopted from the upload's `done` frame (prepend, dedupe by id) instead of
+refetching, mirroring how `/chat` adopts its `saved` frame. A duplicate upload answers
+`200` JSON with the existing document, which is also adopted.
+
+Header: back arrow to `/chat`, theme toggle, and the settings avatar — the same content-page
+chrome as `/memory`. The chat app bar links here as **Docs**.
+
 ---
 
 ## 6. Theme and language
@@ -657,6 +814,10 @@ Header also carries the language toggle here. Success alerts per section
 | `datetime-local` + `new Date(value).toISOString()` | `@react-native-community/datetimepicker`, then send ISO-8601 UTC |
 | `-new Date().getTimezoneOffset()` | same computation for `tz_offset` (minutes **east** of UTC) |
 | Pre-paint theme script | read the stored theme (or `useColorScheme()`) before the first render |
+| `THUI.confirm` (styled dialog) | `Alert.alert` with a destructive button, or a `Modal` that mirrors §4.11 — keep focus on Cancel for destructive actions |
+| `THUI.showSuccess` + CSS transitions | a toast/snackbar with a 4.5s timer, animated with `Animated`/Reanimated |
+| `.stagger-list` + `anim-*` classes | `Animated`/Reanimated entering animations with the same durations and easings (§4.10) |
+| `prefers-reduced-motion` media query | `AccessibilityInfo.isReduceMotionEnabled()` — gate every entering animation and the smooth scroll |
 
 ### 8.3 Suggested navigation
 
@@ -665,7 +826,7 @@ Root
 ├── (auth)  Login, Register           — no token
 └── (app)   Chat  ← home              — token required
             Call (modal / push)       — voice mode, needs mic permission
-            Memory, Schedule, Trusted — reachable from the chat tab row
+            Memory, Schedule, Trusted, Documents — reachable from the chat tab row
             Settings                  — from the avatar
 ```
 
@@ -712,11 +873,12 @@ All user-facing copy lives in `STRINGS` maps inside these modules (each has `en`
 
 | Module | Screen | Keys |
 | --- | --- | --- |
-| `static/chat.js` | Chat | `code, greeting, welcome, logout, clear, placeholder, placeholderShort, thinking, noResponse, stop, toggleLang, deleteReply, deleteOne, toolSaving, toolSearching, toolSaved, toolFound, toolFailed, toolGeneric, toolAccount, toolAccountDone, loadFailed, deleteFailed, clearFailed` |
-| `static/call.js` | Call | `code, badge, title, subtitle, start, hangup, mute, unmute, ready, connecting, listening, thinking, speaking, muted, ended, logout, placeholder, you, sage, voiceUnavailable, voiceExpired, micDenied, micUnavailable, micLanguage, micNetwork, micNetworkOffline, micBraveBlocked, noSpeech, audioBlocked, error, requestFailed` |
-| `static/memory-page.js` | Memory | `memoryTitle, memoryHint, export, deleteAll, empty, entities, facts, relationships, consentTitle, consentHint, delete, confirmDelete, confirmDeleteAll, deletedOne, deletedAll, exported, emptyValue, consentLocation, consentVoice, consentMemorySharing, consentFamiliarVoice, consentTrustedSharing, on, off, genericError, loadFailed` |
-| `static/schedule-page.js` | Schedule | `todayTitle, todayHint, todayEmpty, upcomingTitle, upcomingEmpty, titleLabel, whenLabel, placeLabel, add, routinesTitle, routinesHint, routinesEmpty, placesTitle, placesHint, placesEmpty, placeNameLabel, radiusLabel, saveHere, placeSaved, confirmRemovePlace, locationOff, locationDenied, done, remove, confirmRemove, confirmRemoveRoutine, added, genericError, loadFailed, required` |
-| `static/trusted-page.js` | Trusted | `trustedTitle, trustedHint, trustedEmpty, emailLabel, allowLastSeen, allowLocation, sendInvite, invitesTitle, invitesEmpty, watchingTitle, watchingEmpty, sharingTitle, sharingHint, sharingOn, sharingOff, notSharing, paused, pending, accepted, revoked, revoke, accept, decline, see, hide, confirmRevoke, inviteSent, acceptedMsg, declinedMsg, revokedMsg, lastSeen, neverSeen, warning, location, locationHidden, staleBadge, activeBadge, unknownBadge, genericError, loadFailed` |
+| `static/chat.js` | Chat | `code, greeting, welcome, logout, clear, placeholder, placeholderShort, thinking, noResponse, stop, toggleLang, deleteReply, deleteOne, toolSaving, toolSearching, toolSaved, toolFound, toolFailed, toolGeneric, toolAccount, toolAccountDone, loadFailed, deleteFailed, clearFailed, jumpLatest, clearTitle, clearBody, clearConfirm, cancel, suggest1, suggest2, suggest3` |
+| `static/call.js` | Call | `code, badge, title, subtitle, start, hangup, mute, unmute, ready, connecting, listening, thinking, speaking, muted, ended, logout, placeholder, you, sage, voiceUnavailable, voiceExpired, voiceQuota, micDenied, micUnavailable, micLanguage, micServiceUnreachable, micRetry, micInsecure, micSilent, noSpeech, audioBlocked, error, requestFailed` |
+| `static/memory-page.js` | Memory | `memoryTitle, memoryHint, export, deleteAll, empty, entities, facts, relationships, consentTitle, consentHint, delete, confirmDelete, confirmDeleteAll, cancel, deletedOne, deletedAll, exported, emptyValue, consentLocation, consentVoice, consentMemorySharing, consentFamiliarVoice, consentTrustedSharing, on, off, genericError, loadFailed` |
+| `static/schedule-page.js` | Schedule | `todayTitle, todayHint, todayEmpty, upcomingTitle, upcomingEmpty, titleLabel, whenLabel, placeLabel, add, routinesTitle, routinesHint, routinesEmpty, placesTitle, placesHint, placesEmpty, placeNameLabel, radiusLabel, saveHere, placeSaved, confirmRemovePlace, locationOff, locationDenied, done, remove, confirmRemove, confirmRemoveRoutine, cancel, added, genericError, loadFailed, required` |
+| `static/trusted-page.js` | Trusted | `trustedTitle, trustedHint, trustedEmpty, emailLabel, allowLastSeen, allowLocation, sendInvite, invitesTitle, invitesEmpty, watchingTitle, watchingEmpty, sharingTitle, sharingHint, sharingOn, sharingOff, notSharing, paused, pending, accepted, revoked, revoke, accept, decline, see, hide, confirmRevoke, cancel, inviteSent, acceptedMsg, declinedMsg, revokedMsg, lastSeen, neverSeen, warning, location, locationHidden, staleBadge, activeBadge, unknownBadge, genericError, loadFailed` |
+| `static/documents-page.js` | Documents | `upload, uploading, uploaded, duplicate, empty, remove, confirmDelete, cancel, removed, pages, passages, page, passage, stageExtracting, stageChunking, stageIndexing, tooLarge, notPdf, genericError, loadFailed` |
 | `static/settings.js` | Settings | `pageTitle, profileTitle, profileHint, firstName, lastName, email, currentPassword, currentPasswordHint, saveProfile, passwordTitle, passwordHint, newPassword, confirmPassword, savePassword, profileSaved, passwordSaved, passwordMismatch, genericError, busy, toggleLang` |
 | `static/location.js` | banners | `at, next, off` |
 | `static/schedule-reminder.js` | banner | `next, at, today` |

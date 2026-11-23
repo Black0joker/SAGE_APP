@@ -180,6 +180,46 @@ export type Peek = {
   status: PeekStatus;
 };
 
+/**
+ * Uploaded PDFs (API.md §9, DOCUMENTS.md).
+ *
+ * `sha256` is deliberately absent: the server never returns it.
+ */
+export type Document = {
+  id: string;
+  name: string;
+  page_count: number;
+  chunk_count: number;
+  size_bytes: number;
+  created_at: string;
+};
+
+export type DocumentPage = { page: number; preview: string };
+
+export type DocumentWithPages = Document & { pages: DocumentPage[] };
+
+/** The three stages the indexing stream reports (DOCUMENTS.md §4). */
+export type UploadStage = 'extracting' | 'chunking' | 'indexing';
+
+/**
+ * One `progress` frame. `total: 0` means the length is not known yet, so the
+ * bar must stay indeterminate rather than invent a percentage (DESIGN §4.12).
+ */
+export type UploadProgress = { stage: UploadStage; done: number; total: number };
+
+export type UploadFrame =
+  | { progress: UploadProgress }
+  | { done: { document: Document; created: boolean } }
+  | { error: { code: string; message: string; status?: number } };
+
+/**
+ * A settled upload. A duplicate is an ordinary `200` with a body — there is no
+ * stream to read because there is nothing to index (§4.3).
+ */
+export type UploadOutcome =
+  | { kind: 'created'; document: Document }
+  | { kind: 'duplicate'; document: Document };
+
 export type VoiceStatus = {
   configured: boolean;
   available: boolean;

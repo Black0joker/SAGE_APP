@@ -25,6 +25,7 @@ export const Icons = {
   brand: 'spa',
   schedule: 'event',
   memory: 'psychology',
+  documents: 'description',
   trusted: 'verified-user',
   call: 'call',
   chat: 'forum',

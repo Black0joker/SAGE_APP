@@ -27,12 +27,17 @@ function toolLineFor(
   t: ReturnType<typeof useT>['t'],
 ): string {
   const lower = name.toLowerCase();
+  // Checked first: `search_documents` / `read_document` would otherwise fall into
+  // the generic branch, and "document" must not be mistaken for memory.
+  const isDocument = lower.includes('document') || lower.includes('pdf');
+  const isRead = lower.includes('read');
   const isMemory =
     lower.includes('memory') || lower.includes('recall') || lower.includes('fact') || lower.includes('entity');
   const isSave = lower.includes('save') || lower.includes('store') || lower.includes('write') || lower.includes('remember');
   const isAccount = lower.includes('account') || lower.includes('profile') || lower.includes('user');
 
   if (status === 'start') {
+    if (isDocument) return isRead ? t('toolDocumentRead') : t('toolDocuments');
     if (isAccount) return t('toolAccount');
     if (isMemory && isSave) return t('toolSaving');
     if (isMemory) return t('toolSearching');
@@ -40,6 +45,7 @@ function toolLineFor(
   }
 
   if (ok === false) return t('toolFailed');
+  if (isDocument) return isRead ? t('toolDocumentReadDone') : t('toolDocumentFound');
   if (isAccount) return t('toolAccountDone');
   if (isMemory && isSave) return t('toolSaved');
   if (isMemory) return t('toolFound');

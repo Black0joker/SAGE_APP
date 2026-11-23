@@ -8,3 +8,4 @@ export { Badge, Chip, TogglePill, Avatar, StatusLine, type BadgeTone } from './P
 export { AppShell, AppBar } from './AppShell';
 export { ChatBubble, TypingDots, StreamingCaret } from './ChatBubble';
 export { Composer } from './Composer';
+export { ProgressBar } from './ProgressBar';

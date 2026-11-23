@@ -111,6 +111,7 @@ export default function RootLayout() {
               <Stack.Screen name="memory" />
               <Stack.Screen name="schedule" />
               <Stack.Screen name="trusted" />
+              <Stack.Screen name="documents" />
               <Stack.Screen name="settings" />
               <Stack.Screen name="call" options={{ presentation: 'modal' }} />
             </Stack.Protected>
