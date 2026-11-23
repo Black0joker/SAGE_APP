@@ -1,268 +1,168 @@
+import {
+  abandon,
+  beginRecording,
+  captureFinal,
+  capturePartial,
+  idleRecording,
+  interrupt,
+  requestStop,
+  takeText,
+  type RecordingState,
+} from '../pushToTalk';
+
 /**
- * Push-to-talk state machine.
+ * Push-to-talk state machine (DESIGN §5.5).
  *
- * The call screen records only between tapping Record and tapping Stop, then
- * sends **once**. These tests pin the rules that make that safe, since the
- * recogniser reports results asynchronously after `stop()` is called.
+ * These import the **real** module that `src/app/call.tsx` applies. The previous
+ * version of this file mirrored the logic in a local type, so it kept passing
+ * while the screen was broken — which is exactly how the "Stop & send sends
+ * nothing" bug reached a device.
  */
 
-type Session = {
-  recording: boolean;
-  captured: string;
-  partial: string;
-  pendingSend: boolean;
-  sent: string[];
-};
-
-function createSession(): Session {
-  return { recording: false, captured: '', partial: '', pendingSend: false, sent: [] };
-}
-
-/** Mirrors `startRecording` in `src/app/call.tsx`. */
-function startRecording(session: Session) {
-  session.captured = '';
-  session.partial = '';
-  session.pendingSend = false;
-  session.recording = true;
-}
-
-/** Mirrors `handleFinalSpeech`: accumulate, never send. */
-function onFinal(session: Session, transcript: string) {
-  const text = transcript.trim();
-  if (!text) return;
-  session.captured = session.captured ? `${session.captured} ${text}` : text;
-  session.partial = '';
-}
-
-/** Mirrors `onPartial`: remember the latest interim transcript. */
-function onPartial(session: Session, transcript: string) {
-  session.partial = transcript;
-}
-
-/**
- * Mirrors `flushRecording`: send at most once, then reset. Falls back to the
- * latest partial when the recogniser never marked a result final.
- */
-function flush(session: Session, force = false) {
-  if (!session.pendingSend) return;
-  if (!force && session.recording) return;
-  session.pendingSend = false;
-
-  const finals = session.captured.trim();
-  const fallback = session.partial.trim();
-  const text = finals || fallback;
-
-  session.captured = '';
-  session.partial = '';
-  if (!text) return;
-  session.sent.push(text);
-}
-
-/** Mirrors `stopRecording`: mark for send, then wait for the final. */
-function stopRecording(session: Session) {
-  if (!session.recording) return;
-  session.recording = false;
-  session.pendingSend = true;
+/** Records one full interaction and returns the text that would be sent. */
+function run(steps: (state: RecordingState) => RecordingState, start = beginRecording()) {
+  return takeText(steps(start));
 }
 
 describe('push-to-talk', () => {
   it('sends nothing while recording', () => {
-    const session = createSession();
-    startRecording(session);
+    let session = beginRecording();
+    session = captureFinal(session, 'I want to book');
+    session = captureFinal(session, 'a dentist appointment');
 
-    onFinal(session, 'I want to book');
-    onFinal(session, 'a dentist appointment');
-
-    expect(session.sent).toEqual([]);
+    expect(session.recording).toBe(true);
+    expect(session.pendingSend).toBe(false);
     expect(session.captured).toBe('I want to book a dentist appointment');
   });
 
-  it('sends the whole recording once when the engine ends', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'Book me');
-    onFinal(session, 'a dentist appointment tomorrow');
+  it('sends the whole recording once after a stop', () => {
+    const { text } = run((session) =>
+      requestStop(captureFinal(captureFinal(session, 'Book me'), 'a dentist tomorrow')),
+    );
 
-    stopRecording(session);
-    flush(session); // onEnd
-
-    expect(session.sent).toEqual(['Book me a dentist appointment tomorrow']);
+    expect(text).toBe('Book me a dentist tomorrow');
   });
 
-  it('does not send on an intermediate final while still recording', () => {
-    // Continuous mode can emit several finals for one utterance.
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'First bit');
-    flush(session); // must be a no-op: still recording
+  it('sends at most once, however many flushes run', () => {
+    // `end`, a trailing final and the safety timer can all fire.
+    const stopped = requestStop(captureFinal(beginRecording(), 'Hello'));
 
-    expect(session.sent).toEqual([]);
-    expect(session.captured).toBe('First bit');
-  });
+    const first = takeText(stopped);
+    expect(first.text).toBe('Hello');
+    expect(first.next.pendingSend).toBe(false);
 
-  it('never sends twice even if flush runs again', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'Hello');
-    stopRecording(session);
-
-    flush(session);
-    flush(session); // e.g. onEnd firing after onFinal
-
-    expect(session.sent).toEqual(['Hello']);
-  });
-
-  it('sends nothing when the user recorded silence', () => {
-    const session = createSession();
-    startRecording(session);
-    stopRecording(session);
-    flush(session);
-
-    expect(session.sent).toEqual([]);
-  });
-
-  it('ignores a stop when not recording', () => {
-    const session = createSession();
-    stopRecording(session);
-    flush(session);
-
-    expect(session.sent).toEqual([]);
-  });
-
-  it('starts a fresh session for the next recording', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'First message');
-    stopRecording(session);
-    flush(session);
-
-    startRecording(session);
-    expect(session.captured).toBe('');
-    expect(session.pendingSend).toBe(false);
-
-    onFinal(session, 'Second message');
-    stopRecording(session);
-    flush(session);
-
-    expect(session.sent).toEqual(['First message', 'Second message']);
+    // A second flush sees `pendingSend: false` and sends nothing.
+    expect(takeText(first.next).text).toBe('');
   });
 
   it('keeps a pause mid-thought inside one message', () => {
-    // The old behaviour sent each sentence as it was recognised.
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'So I was thinking');
-    // ...a long pause, still recording...
-    onFinal(session, 'maybe next Tuesday works');
-    stopRecording(session);
-    flush(session);
+    // Continuous mode can emit several finals for one utterance.
+    const { text } = run((session) =>
+      requestStop(captureFinal(captureFinal(session, 'So I was thinking'), 'maybe Tuesday works')),
+    );
 
-    expect(session.sent).toEqual(['So I was thinking maybe next Tuesday works']);
+    expect(text).toBe('So I was thinking maybe Tuesday works');
   });
 
-  it('sends what exists when the engine never emits an end after stop', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'Partial thought');
-    stopRecording(session);
-    // Safety timer fires; the engine never signalled the end.
-    flush(session, true);
+  it('ignores a stop when not recording', () => {
+    const stopped = requestStop(idleRecording);
+    expect(stopped.pendingSend).toBe(false);
+    expect(takeText(stopped).text).toBe('');
+  });
 
-    expect(session.sent).toEqual(['Partial thought']);
+  it('starts a fresh session for the next recording', () => {
+    const first = takeText(requestStop(captureFinal(beginRecording(), 'First message')));
+    expect(first.text).toBe('First message');
+
+    const second = beginRecording();
+    expect(second.captured).toBe('');
+    expect(second.partial).toBe('');
+    expect(second.pendingSend).toBe(false);
+
+    expect(takeText(requestStop(captureFinal(second, 'Second message'))).text).toBe('Second message');
   });
 
   it('does not send a recording discarded by hang-up', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'Never mind');
-    // hang-up: discard without sending
-    session.recording = false;
-    session.pendingSend = false;
-    session.captured = '';
-    session.partial = '';
-
-    flush(session);
-    expect(session.sent).toEqual([]);
+    const discarded = abandon();
+    expect(takeText(discarded).text).toBe('');
   });
 });
 
-describe('partial-only recordings (the reported bug)', () => {
-  /**
-   * Reported symptom: tap Record, speak, tap Stop — nothing sent.
-   *
-   * Cause: the code accumulated only `isFinal` results, but short Android
-   * utterances often never produce one, so the buffer was empty while the words
-   * were visible in the live preview. The latest partial is now the fallback.
-   */
-  it('sends the latest partial when no final ever arrives', () => {
-    const session = createSession();
-    startRecording(session);
+describe('partial-only recordings', () => {
+  it('falls back to the latest partial when no final ever arrives', () => {
+    // Short Android utterances often never produce an `isFinal`.
+    let session = beginRecording();
+    session = capturePartial(session, 'I want to book');
+    session = capturePartial(session, 'I want to book a dentist');
+    session = capturePartial(session, 'I want to book a dentist appointment');
 
-    onPartial(session, 'I want to book');
-    onPartial(session, 'I want to book a dentist');
-    onPartial(session, 'I want to book a dentist appointment');
-
-    stopRecording(session);
-    flush(session, true); // safety timer
-
-    expect(session.sent).toEqual(['I want to book a dentist appointment']);
+    expect(takeText(requestStop(session)).text).toBe('I want to book a dentist appointment');
   });
 
   it('prefers the final over the partial', () => {
-    const session = createSession();
-    startRecording(session);
-    onPartial(session, 'Book me a dentist appoi');
-    onFinal(session, 'Book me a dentist appointment.');
+    let session = capturePartial(beginRecording(), 'Book me a dentist appoi');
+    session = captureFinal(session, 'Book me a dentist appointment.');
 
-    stopRecording(session);
-    flush(session);
-
-    expect(session.sent).toEqual(['Book me a dentist appointment.']);
+    expect(takeText(requestStop(session)).text).toBe('Book me a dentist appointment.');
   });
 
-  it('sends once when the final arrives after end', () => {
-    const session = createSession();
-    startRecording(session);
-    onPartial(session, 'Partial words here');
-
-    stopRecording(session);
-    // `end` fires first, inside the grace window; then the final lands.
-    onFinal(session, 'Final words here');
-    flush(session);
-
-    expect(session.sent).toEqual(['Final words here']);
-  });
-
-  it('sends exactly once when both end and final trigger a flush', () => {
-    const session = createSession();
-    startRecording(session);
-    onFinal(session, 'Hello there');
-    stopRecording(session);
-
-    flush(session); // from `end`
-    flush(session); // from the trailing final
-    flush(session, true); // safety timer
-
-    expect(session.sent).toEqual(['Hello there']);
+  it('clears the partial once a final lands', () => {
+    const session = captureFinal(capturePartial(beginRecording(), 'partial bit'), 'final bit');
+    expect(session.partial).toBe('');
+    expect(session.captured).toBe('final bit');
   });
 
   it('sends nothing when there was no partial and no final', () => {
-    const session = createSession();
-    startRecording(session);
-    stopRecording(session);
-    flush(session, true);
-
-    expect(session.sent).toEqual([]);
+    expect(takeText(requestStop(beginRecording())).text).toBe('');
   });
 
-  it('does not send a partial recorded before the recording started', () => {
-    const session = createSession();
-    onPartial(session, 'stale words from a previous session');
+  it('ignores a partial recorded before the recording started', () => {
+    // `beginRecording` returns a clean session, so stale words cannot leak in.
+    const stale = capturePartial(idleRecording, 'words from a previous session');
+    const fresh = beginRecording();
+    expect(fresh.partial).toBe('');
+    expect(takeText(requestStop(fresh)).text).toBe('');
+    expect(stale.partial).toBe('words from a previous session');
+  });
+});
 
-    startRecording(session); // clears the partial
-    stopRecording(session);
-    flush(session, true);
+describe('the reported bug: stop sends nothing', () => {
+  /**
+   * An error mid-utterance used to set `recordingRef.current = false` and drop the
+   * buffer, so words already heard were lost and nothing was ever sent.
+   */
+  it('keeps captured text when the recogniser fails mid-recording', () => {
+    let session = captureFinal(beginRecording(), 'Book me a dentist');
+    session = interrupt(session);
 
-    expect(session.sent).toEqual([]);
+    expect(session.recording).toBe(false);
+    // The error ended the utterance; it did not invalidate what was said.
+    expect(session.captured).toBe('Book me a dentist');
+    expect(session.pendingSend).toBe(true);
+    expect(takeText(session).text).toBe('Book me a dentist');
+  });
+
+  it('keeps a partial when the recogniser fails before any final', () => {
+    let session = capturePartial(beginRecording(), 'half a thought');
+    session = interrupt(session);
+
+    expect(takeText(session).text).toBe('half a thought');
+  });
+
+  it('does not queue a send when an error arrives with nothing captured', () => {
+    const session = interrupt(beginRecording());
+
+    expect(session.recording).toBe(false);
+    // Nothing to send, so the screen reports the reason instead of sending.
+    expect(session.pendingSend).toBe(false);
+    expect(takeText(session).text).toBe('');
+  });
+
+  it('keeps a stop pending when an error follows the stop', () => {
+    const stopped = requestStop(captureFinal(beginRecording(), 'already stopped'));
+    const failed = interrupt(stopped);
+
+    expect(failed.pendingSend).toBe(true);
+    expect(takeText(failed).text).toBe('already stopped');
   });
 });

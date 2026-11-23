@@ -125,6 +125,7 @@ const en = {
   micNetworkOffline: 'You appear to be offline. You can keep typing.',
   micBraveBlocked: 'This browser blocks the speech service. You can keep typing.',
   noSpeech: 'I did not catch that. Try again, or type.',
+  waitForSpeech: 'SAGE is still speaking. Wait for it to finish, then tap Record.',
   audioBlocked: 'Audio playback was blocked. Tap Start call again.',
   requestFailed: 'The request failed. Please try again.',
 
@@ -400,6 +401,7 @@ const ar: Record<StringKey, string> = {
   micNetworkOffline: 'يبدو أنك غير متصل. يمكنك متابعة الكتابة.',
   micBraveBlocked: 'هذا المتصفح يحجب خدمة الكلام. يمكنك متابعة الكتابة.',
   noSpeech: 'لم أسمع ذلك. حاول مرة أخرى، أو اكتب.',
+  waitForSpeech: 'سايج ما زال يتحدث. انتظر حتى ينتهي ثم اضغط تسجيل.',
   audioBlocked: 'تم حجب تشغيل الصوت. اضغط على بدء المكالمة مرة أخرى.',
   requestFailed: 'فشل الطلب. حاول مرة أخرى.',
 

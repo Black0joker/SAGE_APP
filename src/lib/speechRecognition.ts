@@ -50,6 +50,22 @@ export type RecognitionHandlers = {
 
 export type RecognitionEventName = 'start' | 'end' | 'result' | 'error' | 'nomatch';
 
+export type RecognitionUnavailableReason = 'no-native-module' | 'no-permission';
+
+/**
+ * Whether recognition can actually run right now, and why not.
+ *
+ * `startRecognition` is a silent no-op when the native module is absent, so the
+ * screen must ask this *before* showing a recording state — otherwise the UI
+ * claims to be recording while nothing is listening.
+ */
+export function recognitionReadiness():
+  | { ready: true }
+  | { ready: false; reason: RecognitionUnavailableReason } {
+  if (!isSpeechRecognitionAvailable()) return { ready: false, reason: 'no-native-module' };
+  return { ready: true };
+}
+
 /** Subscribes to recognition events; returns an unsubscribe function. */
 export function addRecognitionListeners(handlers: RecognitionHandlers): () => void {
   const module = loadModule();
