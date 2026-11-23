@@ -2,11 +2,13 @@ import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { FlatList, View, type ListRenderItemInfo } from 'react-native';
 
+import { care as careApi } from '@/api/endpoints';
 import { useChatController } from '@/hooks/useChatController';
 import { useLocationPing } from '@/hooks/useLocationPing';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useTodayAppointments } from '@/hooks/useThread';
 import { useT } from '@/i18n/useT';
+import { careModeLabel, dialableNumber } from '@/lib/care';
 import { confirmDestructive } from '@/lib/confirm';
 import { isPast } from '@/lib/time';
 import type { Bubble } from '@/state/chatStream';
@@ -14,7 +16,7 @@ import { useSession } from '@/state/session';
 import { space } from '@/theme/tokens';
 import { EmptyState, InlineAlert } from '@/ui/Alert';
 import { AppShell } from '@/ui/AppShell';
-import { AppointmentBand, PlaceBand } from '@/ui/Banners';
+import { AppointmentBand, CareSuggestionBand, CrisisBand, PlaceBand } from '@/ui/Banners';
 import { Button } from '@/ui/Button';
 import { ChatBubble } from '@/ui/ChatBubble';
 import { Composer } from '@/ui/Composer';
@@ -27,7 +29,7 @@ import { StatusLine } from '@/ui/Pill';
  * → status line. Only the thread scrolls.
  */
 export default function ChatScreen() {
-  const { t, isRtl } = useT();
+  const { t, isRtl, language } = useT();
   const router = useRouter();
   const reducedMotion = useReducedMotion();
   const session = useSession();
@@ -40,6 +42,8 @@ export default function ChatScreen() {
     loadError,
     restoredText,
     consumeRestoredText,
+    careFrame,
+    dismissCare,
     send,
     stop,
     deleteBubble,
@@ -153,6 +157,48 @@ export default function ChatScreen() {
           <View style={{ padding: space(4) }}>
             <InlineAlert tone="error" message={loadError} />
           </View>
+        ) : null}
+
+        {/*
+          The crisis band renders above every other band and has no dismiss
+          control: it is server-driven safety information (CARE.md §10.4).
+        */}
+        {careFrame?.trigger === 'crisis' ? (
+          <CrisisBand
+            title={t('crisisTitle')}
+            body={
+              dialableNumber(careFrame.resources.emergency)
+                ? t('crisisBody', { number: careFrame.resources.emergency ?? '' })
+                : t('crisisBodyNoNumber')
+            }
+            emergency={careFrame.resources.emergency}
+            callLabel={t('careCall', { number: careFrame.resources.emergency ?? '' })}
+            careLabel={t('crisisCareDetails')}
+            trustedLabel={t('crisisTrusted')}
+            onOpenCare={() => router.push('/care')}
+            onOpenTrusted={() => router.push('/trusted')}
+          />
+        ) : null}
+
+        {/* A suggestion is always a confirm — the mode never changes silently. */}
+        {careFrame?.trigger === 'suggested' ? (
+          <CareSuggestionBand
+            title={t('careSuggestionTitle', {
+              mode: careModeLabel(careFrame.mode, language),
+            })}
+            note={careFrame.reason || t('careSuggestionNote')}
+            acceptLabel={t('careSuggestionSwitch')}
+            dismissLabel={t('careSuggestionDismiss')}
+            onAccept={() => {
+              // Persist as the default mode. This is the only thing the client
+              // can change without widening the chat `mode` field.
+              void careApi
+                .savePreferences({ preferred_mode: careFrame.mode })
+                .catch(() => undefined)
+                .finally(() => dismissCare());
+            }}
+            onDismiss={dismissCare}
+          />
         ) : null}
 
         {nextAppointment ? <AppointmentBand appointment={nextAppointment} /> : null}

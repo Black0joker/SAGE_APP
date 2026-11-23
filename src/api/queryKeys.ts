@@ -19,5 +19,9 @@ export const keys = {
   peek: (contactId: string) => ['trusted', 'peek', contactId] as const,
   documents: ['documents'] as const,
   document: (id: string) => ['documents', id] as const,
+  insights: (includeExpired: boolean) => ['insights', { includeExpired }] as const,
+  care: ['care'] as const,
+  careSymptoms: ['care', 'symptoms'] as const,
+  careResources: (region?: string) => ['care', 'resources', region ?? 'default'] as const,
   voiceStatus: ['voice', 'status'] as const,
 };

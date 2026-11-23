@@ -83,7 +83,11 @@ export type ConsentKind =
   | 'trusted_sharing'
   | 'voice'
   | 'memory_sharing'
-  | 'familiar_voice';
+  | 'familiar_voice'
+  /** Gates storing communication preferences and expressed feelings. */
+  | 'insights'
+  /** Gates recording reported symptoms. */
+  | 'health_data';
 
 export type Consent = {
   kind: ConsentKind;
@@ -220,6 +224,124 @@ export type UploadOutcome =
   | { kind: 'created'; document: Document }
   | { kind: 'duplicate'; document: Document };
 
+/**
+ * Insights — communication preferences and feelings the user **expressed**
+ * (API.md §11, INSIGHTS.md). Both stores are consent-gated by `insights`.
+ */
+export type PreferenceCategory = 'identity' | 'style' | 'interest' | 'support' | 'boundary';
+
+/** The fixed vocabulary; an unknown key is a `400` server-side. */
+export type PreferenceKey =
+  | 'preferred_name'
+  | 'tone'
+  | 'response_length'
+  | 'detail_level'
+  | 'language'
+  | 'format'
+  | 'emoji'
+  | 'humour'
+  | 'topics_of_interest'
+  | 'support_style'
+  | 'avoid';
+
+/** The 13 fixed mood labels. The client localises them, never the server. */
+export type Mood =
+  | 'happy'
+  | 'excited'
+  | 'grateful'
+  | 'hopeful'
+  | 'calm'
+  | 'neutral'
+  | 'tired'
+  | 'unwell'
+  | 'stressed'
+  | 'anxious'
+  | 'frustrated'
+  | 'sad'
+  | 'angry';
+
+export type Preference = {
+  id: string;
+  key: PreferenceKey;
+  category: PreferenceCategory;
+  /** Server-provided, already human-readable: "What to call you". */
+  label: string;
+  /** JSON-decoded by the server: string, number, boolean, array or object. */
+  value: unknown;
+  confidence: number | null;
+  source: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MoodObservation = {
+  id: string;
+  mood: Mood;
+  /** −1..1 presentation hint; the server derives it from the mood. */
+  valence: number | null;
+  confidence: number | null;
+  /** In the user's own words, ≤ 500 chars. */
+  note: string | null;
+  source: string | null;
+  observed_at: string;
+  /** A feeling stops being current here; expired rows are hidden by default. */
+  expires_at: string;
+  created_at: string;
+};
+
+export type InsightsState = {
+  preferences: Preference[];
+  moods: MoodObservation[];
+  consent: { kind: 'insights'; granted: boolean };
+};
+
+/**
+ * Care modes (API.md §12, CARE.md). SAGE is not a clinician or an emergency
+ * service: the modes change behaviour, never authority.
+ */
+export type CareMode = 'doctor' | 'therapist' | 'emergency';
+
+export type CareResources = {
+  region: string;
+  label: string;
+  /** The emergency number to dial. Rendered from the server, never hard-coded. */
+  emergency: string | null;
+  police?: string | null;
+  ambulance?: string | null;
+  crisis_lines: { name: string; number: string }[];
+  message: string;
+};
+
+export type CareRegion = { region: string; label: string };
+
+export type CareModeInfo = { mode: CareMode; label: string; hint: string };
+
+export type Symptom = {
+  id: string;
+  symptom: string;
+  severity: number | null;
+  duration: string | null;
+  note: string | null;
+  observed_at: string;
+  created_at: string;
+};
+
+export type CareState = {
+  preferences: { region: string; preferred_mode: CareMode | null };
+  resources: CareResources;
+  regions: CareRegion[];
+  modes: CareModeInfo[];
+  consent: { kind: 'health_data'; granted: boolean };
+};
+
+/** The `care` frame, emitted before any text on the chat stream (API.md §12.8). */
+export type CareFrame = {
+  mode: CareMode;
+  trigger: 'crisis' | 'suggested';
+  resources: CareResources;
+  reason?: string | null;
+};
+
 export type VoiceStatus = {
   configured: boolean;
   available: boolean;
@@ -254,6 +376,8 @@ export type StreamEvent =
   | { delta: string }
   | { reasoning: string }
   | { tool: { name: string; status: 'start' | 'end'; ok?: boolean } }
+  /** Emitted before any text. A `crisis` trigger must never be hidden. */
+  | { care: CareFrame }
   | { done: true; finish_reason?: string | null; usage?: unknown }
   | { stopped: true }
   | { saved: { conversation_id: string; user_turn_id: string; assistant_turn_id: string } }

@@ -18,11 +18,14 @@ import { Icon, type IconName } from './Icon';
  * and an optional sticky footer.
  */
 
-const NAV: { key: string; href: string; label: string; icon: IconName }[] = [
+const NAV: { key: string; href: string; label: string; icon: IconName; iconOnly?: boolean }[] = [
   { key: 'trusted', href: '/trusted', label: 'navTrusted', icon: 'verified-user' },
   { key: 'schedule', href: '/schedule', label: 'navSchedule', icon: 'event' },
   { key: 'memory', href: '/memory', label: 'navMemory', icon: 'psychology' },
   { key: 'documents', href: '/documents', label: 'navDocs', icon: 'description' },
+  // DESIGN §3.2: six entries, and a sixth label does not fit — Insights is
+  // icon-only on the wide row. The label is still the accessibility name.
+  { key: 'insights', href: '/insights', label: 'navInsights', icon: 'insights', iconOnly: true },
   { key: 'call', href: '/call', label: 'navCall', icon: 'call' },
 ];
 
@@ -255,9 +258,11 @@ export function AppBar({
                 }}
               >
                 <Icon name={item.icon} size={16} color={active ? theme.chipText : theme.textMuted} />
-                <AppText variant="meta" color={active ? theme.chipText : theme.textMuted}>
-                  {t(item.label as never)}
-                </AppText>
+                {item.iconOnly ? null : (
+                  <AppText variant="meta" color={active ? theme.chipText : theme.textMuted}>
+                    {t(item.label as never)}
+                  </AppText>
+                )}
               </Pressable>
             );
           })}

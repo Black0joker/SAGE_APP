@@ -1,10 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { conversations } from '@/api/endpoints';
 import { keys } from '@/api/queryKeys';
 import { openChatStream, stopChatStream, type StreamController } from '@/api/stream';
-import type { ChatRequest, StreamEvent } from '@/api/types';
+import type { CareFrame, ChatRequest, StreamEvent } from '@/api/types';
 import { usePrefs } from '@/state/prefs';
 import {
   bubbleFromTurn,
@@ -60,6 +60,12 @@ export type ChatController = {
   loading: boolean;
   loadError: string | null;
   restoredText: string | null;
+  /**
+   * The last `care` frame from the stream (API.md §12.8). A `crisis` trigger must
+   * stay visible until the screen replaces it; a `suggested` one is a prompt.
+   */
+  careFrame: CareFrame | null;
+  dismissCare: () => void;
   consumeRestoredText: () => void;
   send: (text: string) => void;
   stop: () => void;
@@ -78,6 +84,8 @@ export function useChatController(): ChatController {
   const streaming = useChatStream((state) => state.streaming);
   const toolLine = useChatStream((state) => state.toolLine);
   const restoredText = useChatStream((state) => state.lastFailedText);
+
+  const [careFrame, setCareFrame] = useState<CareFrame | null>(null);
 
   const controllerRef = useRef<StreamController | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -165,6 +173,13 @@ export function useChatController(): ChatController {
 
         if ('reasoning' in event) {
           // Modelled separately; not shown in the thread by default.
+          return;
+        }
+
+        if ('care' in event) {
+          // Emitted before any text. A crisis frame is not dismissible; a
+          // suggestion is only a prompt (CARE.md §10.4).
+          setCareFrame(event.care);
           return;
         }
 
@@ -320,6 +335,9 @@ export function useChatController(): ChatController {
     useChatStream.getState().setLastFailedText(null);
   }, []);
 
+  /** A suggestion can be dismissed; a crisis frame cannot (see the chat screen). */
+  const dismissCare = useCallback(() => setCareFrame(null), []);
+
   return {
     bubbles,
     conversationId,
@@ -328,6 +346,8 @@ export function useChatController(): ChatController {
     loading: thread.isLoading,
     loadError: thread.isError ? t('loadFailed') : null,
     restoredText,
+    careFrame,
+    dismissCare,
     consumeRestoredText,
     send,
     stop,
