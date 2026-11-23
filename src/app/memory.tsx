@@ -27,6 +27,8 @@ const CONSENT_ORDER: { kind: ConsentKind; labelKey: string }[] = [
   { kind: 'memory_sharing', labelKey: 'consentMemorySharing' },
   { kind: 'familiar_voice', labelKey: 'consentFamiliarVoice' },
   { kind: 'trusted_sharing', labelKey: 'consentTrustedSharing' },
+  { kind: 'insights', labelKey: 'consentInsights' },
+  { kind: 'health_data', labelKey: 'consentHealthData' },
 ];
 
 function factValue(value: unknown, emptyLabel: string): string {

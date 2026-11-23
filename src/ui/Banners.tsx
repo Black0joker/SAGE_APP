@@ -1,11 +1,13 @@
-import { View } from 'react-native';
+import { Linking, View } from 'react-native';
 
 import type { Appointment, LocationContext } from '@/api/types';
 import { useT } from '@/i18n/useT';
+import { telUrl } from '@/lib/care';
 import { radius, space } from '@/theme/tokens';
 import { useAppTheme } from '@/theme/useAppTheme';
 import { formatTime } from '@/lib/time';
 import { AppText } from './AppText';
+import { Button } from './Button';
 import { Icon, type IconName } from './Icon';
 
 /**
@@ -133,6 +135,133 @@ export function InfoBand({ message, tone = 'warning' }: { message: string; tone?
       <AppText variant="hint" color={text} style={{ flex: 1 }}>
         {message}
       </AppText>
+    </View>
+  );
+}
+
+/**
+ * The crisis band (CARE.md §10.4, DESIGN §5.12).
+ *
+ * Rules this component enforces, because they are safety requirements rather
+ * than styling choices:
+ *  - it is `alert`, not `status`, so a screen reader interrupts for it;
+ *  - it has **no dismiss control** and is never auto-dismissed;
+ *  - it renders above every other band, so nothing can cover it;
+ *  - the number is whatever the server returned — never a hard-coded hotline.
+ */
+export function CrisisBand({
+  title,
+  body,
+  emergency,
+  callLabel,
+  careLabel,
+  trustedLabel,
+  onOpenCare,
+  onOpenTrusted,
+}: {
+  title: string;
+  body: string;
+  emergency: string | null;
+  callLabel: string;
+  careLabel: string;
+  trustedLabel: string;
+  onOpenCare: () => void;
+  onOpenTrusted: () => void;
+}) {
+  const theme = useAppTheme();
+  const tel = telUrl(emergency);
+
+  return (
+    <View
+      accessibilityRole="alert"
+      accessibilityLiveRegion="assertive"
+      style={{
+        gap: space(2),
+        paddingHorizontal: space(4),
+        paddingVertical: space(3.5),
+        backgroundColor: theme.warningBg,
+        borderBottomWidth: 2,
+        borderBottomColor: theme.warningBorder,
+      }}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2) }}>
+        <Icon name="warning-amber" size={20} color={theme.warningText} />
+        <AppText variant="sectionTitle" color={theme.warningText} style={{ flex: 1 }}>
+          {title}
+        </AppText>
+      </View>
+
+      <AppText variant="hint" color={theme.warningText}>
+        {body}
+      </AppText>
+
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space(2) }}>
+        {tel ? (
+          <Button
+            label={callLabel}
+            icon="call"
+            onPress={() => {
+              // The OS dialer. `Linking.openURL` is a no-op on web, where the
+              // number is still readable in the body above.
+              void Linking.openURL(tel);
+            }}
+            testID="crisis-call"
+          />
+        ) : null}
+        <Button variant="secondary" label={careLabel} onPress={onOpenCare} />
+        <Button variant="secondary" label={trustedLabel} onPress={onOpenTrusted} />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * A model's mode suggestion. Always a prompt: the mode never changes silently
+ * (CARE.md §2, §10.4).
+ */
+export function CareSuggestionBand({
+  title,
+  note,
+  acceptLabel,
+  dismissLabel,
+  onAccept,
+  onDismiss,
+}: {
+  title: string;
+  note: string;
+  acceptLabel: string;
+  dismissLabel: string;
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  const theme = useAppTheme();
+
+  return (
+    <View
+      accessibilityRole="text"
+      accessibilityLiveRegion="polite"
+      style={{
+        gap: space(2),
+        paddingHorizontal: space(4),
+        paddingVertical: space(3),
+        backgroundColor: theme.successBg,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.successBorder,
+      }}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2) }}>
+        <Icon name="info-outline" size={18} color={theme.successText} />
+        <AppText variant="hint" color={theme.successText} style={{ flex: 1 }}>
+          {title}
+        </AppText>
+      </View>
+      <AppText variant="meta" color={theme.successText}>
+        {note}
+      </AppText>
+      <View style={{ flexDirection: 'row', gap: space(2) }}>
+        <Button variant="secondary" label={acceptLabel} onPress={onAccept} />
+        <Button variant="text" label={dismissLabel} onPress={onDismiss} />
+      </View>
     </View>
   );
 }

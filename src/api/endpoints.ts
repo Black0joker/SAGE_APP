@@ -3,6 +3,9 @@ import type {
   Appointment,
   AppointmentStatus,
   AuthPayload,
+  CareMode,
+  CareResources,
+  CareState,
   ChatRequest,
   ChatResponse,
   Consent,
@@ -14,6 +17,7 @@ import type {
   Document,
   DocumentWithPages,
   ForgotCounts,
+  InsightsState,
   Language,
   LocationContext,
   MemoryExport,
@@ -22,6 +26,7 @@ import type {
   Place,
   PublicUser,
   Routine,
+  Symptom,
   VoiceStatus,
   WatchEntry,
 } from './types';
@@ -270,3 +275,77 @@ export const documents = {
   remove: (documentId: string) =>
     http.delete<void>(`/api/documents/${encodeURIComponent(documentId)}`),
 };
+
+/**
+ * Insights (API.md §11). `GET` never requires the consent: a user must always be
+ * able to see and delete what was stored, even after turning the feature off.
+ */
+export const insights = {
+  list: (options: { includeExpired?: boolean; limit?: number } = {}) =>
+    http.get<InsightsState>('/api/insights', {
+      query: {
+        include_expired: options.includeExpired ? 1 : undefined,
+        limit: options.limit,
+      },
+    }),
+
+  exportAll: () => http.get<unknown>('/api/insights/export'),
+
+  deletePreference: (preferenceId: string) =>
+    http.delete<void>(`/api/insights/preference/${encodeURIComponent(preferenceId)}`),
+
+  deleteMood: (moodId: string) =>
+    http.delete<void>(`/api/insights/mood/${encodeURIComponent(moodId)}`),
+};
+
+/** `DELETE /api/insights` needs a JSON body, which `http.delete` cannot carry. */
+export async function forgetInsightsConfirmed(): Promise<{
+  deleted: { preferences: number; moods: number };
+}> {
+  return apiRequest('/api/insights', { method: 'DELETE', body: { confirm: true } });
+}
+
+/**
+ * Care modes (API.md §12). The safety information — resources and numbers — is
+ * always readable; only recording symptoms is gated by `health_data`.
+ */
+export const care = {
+  get: () => http.get<CareState>('/api/care'),
+
+  savePreferences: (payload: { region?: string; preferred_mode?: CareMode | null }) =>
+    http.put<{ preferences: CareState['preferences'] }>('/api/care/preferences', payload),
+
+  listSymptoms: () => http.get<{ symptoms: Symptom[] }>('/api/care/symptoms'),
+
+  addSymptom: (payload: {
+    symptom: string;
+    severity?: number;
+    duration?: string;
+    note?: string;
+    observed_at?: string;
+  }) => http.post<{ symptom: Symptom }>('/api/care/symptoms', payload),
+
+  deleteSymptom: (symptomId: string) =>
+    http.delete<void>(`/api/care/symptoms/${encodeURIComponent(symptomId)}`),
+
+  /** Omitting `region` uses the caller's saved region. */
+  resources: (region?: string) =>
+    http.get<{ resources: CareResources }>('/api/care/resources', {
+      query: { region },
+    }),
+
+  /** Returns numbers and contacts. It sends nothing — reaching out is the user's choice. */
+  escalate: (flagId?: string) =>
+    http.post<{
+      resources: CareResources;
+      contacts: { id: string; email: string; status: string }[];
+      note: string;
+    }>('/api/care/escalate', { flag_id: flagId }),
+};
+
+/** `DELETE /api/care` requires `{"confirm": true}` and resets the preferences. */
+export async function forgetCareConfirmed(): Promise<{
+  deleted: { symptoms: number; crisis_flags: number };
+}> {
+  return apiRequest('/api/care', { method: 'DELETE', body: { confirm: true } });
+}

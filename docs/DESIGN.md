@@ -245,33 +245,55 @@ export const fonts = {
 Desktop / `lg` and wider — single 56px row:
 
 ```
-[ spa SAGE  (Personal memory) ]        [ greeting  log out | Trusted Schedule Memory Call | EN theme avatar ]
+[ spa SAGE  (Personal memory) ]        [ greeting  log out | Trusted Schedule Memory Docs Call | EN theme avatar ]
 ```
+
+Desktop (`lg`+, 1024px and up) — everything on one row. **The bar's canvas is a fixed
+846px** (the shell is `max-w-[880px]`, so a wider window does not buy room):
+
+```
+[ spa SAGE ]                          [ Hi, Yousef  log out | Trusted Schedule Memory Docs Call | EN theme avatar ]
+```
+
+That budget is the exact reason for two rules:
+
+- **The `Personal memory` badge is `lg:hidden`.** Brand + badge + greeting + log out +
+  five nav pills + language + theme + avatar need ~858px, 12px more than exists. The
+  badge is the only decorative item in the row and the nav pills are navigation, so the
+  badge yields — and it yields to *exactly* the breakpoint where the pills join the bar,
+  because between `sm` and `lg` there is room (the pills are in the tab row below).
+  Without this the bar squeezed the brand cluster (`min-w-0`) below its content and the
+  badge spilled 16px **on top of** the greeting.
+- **The brand cluster is `shrink-0` and the right-hand cluster is `min-w-0`.** The
+  flexible side must be the one that can degrade gracefully: the greeting truncates, the
+  brand must not be compressed at all. Adding a sixth destination means either widening
+  that budget or dropping something else — measure the row at 1024px, never assume a
+  big monitor helps.
 
 Mobile and tablet (`< 1024px`) — the nav links move to a **second row** inside the
 same header, because the bar cannot fit them below ~820px:
 
 ```
-row 1:  [ spa SAGE ]                              [ log out  EN  theme  avatar ]
-row 2:  [ Trusted ] [ Schedule ] [ Memory ] [ Call ]     ← 4 equal columns
+row 1:  [ spa SAGE (Personal memory) ]            [ log out  EN  theme  avatar ]
+row 2:  [ Trusted ] [ Schedule ] [ Memory ] [ Docs ] [ Call ]    ← 5 equal columns
 ```
 
 | Region | Behaviour |
 | --- | --- |
 | Wordmark | `spa` icon in a 32px `brand-900` rounded-xl tile + `SAGE`, tracking 0.14em |
-| Context badge | `Personal memory` pill (chat) / `Voice call` pill (call), `sm` and up only |
+| Context badge | `Personal memory` pill (chat) / `Voice call` pill (call), `sm` to `lg` only |
 | Greeting | Server-rendered name, `hidden` below `sm`; truncates to 160px |
 | Log out | Text link at `sm`+; 36px circular icon button below `sm` |
-| Nav pills | `Trusted`, `Schedule`, `Memory`, `Call` — inline pills at `lg`+, tab row below |
+| Nav pills | `Trusted`, `Schedule`, `Memory`, `Docs`, `Call` (labelled) + `Insights` (**icon-only**, a sixth label does not fit) — inline pills at `lg`+, six-column tab row below |
 | Language | `language` icon + `EN`/`AR` code; code hidden below `sm` on `/call` |
 | Theme | 32px circular icon button; sun/moon swapped by the theme controller |
 | Avatar | 32px circle with the first initial, links to `/settings` |
 
-Nav tab row (below `lg`): 4 equal columns, 48px tall on phones (icon over 10px label,
+Nav tab row (below `lg`): 5 equal columns, 48px tall on phones (icon over 10px label,
 `rounded-xl`), switching to inline pills (36px, icon + 12px label, `rounded-full`,
 1px border) from `sm`. Tap targets stay ≥ 44px on phones.
 
-### 3.3 Content pages (memory, schedule, trusted, documents, settings)
+### 3.3 Content pages (memory, schedule, trusted, documents, insights, care, settings)
 
 Same shell, no composer. Main is `px-4 py-6` (24px at `sm`) with 20px vertical gaps
 between **section cards** (`rounded-2xl`, 1px border, 20/24px padding, title 18px +
@@ -343,7 +365,7 @@ hint text        ← 12px, brand-500 / sand-400
 | Voice unavailable banner | warning yellow above | `role="status" aria-live="polite"` |
 | Place context / reminder | full-width band under the header | `role="status"` |
 
-### 4.4 List row (memory, schedule, trusted, documents)
+### 4.4 List row (memory, schedule, trusted, documents, insights, care)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -377,10 +399,13 @@ list: *"Turn these off at any time. Nothing is shared without your permission."*
 
 Kinds shown: **Location** (`location`), **Voice replies** (`voice`),
 **Share memory with trusted people** (`memory_sharing`), **Familiar voice**
-(`familiar_voice`), **Share my activity with trusted people** (`trusted_sharing`).
+(`familiar_voice`), **Share my activity with trusted people** (`trusted_sharing`),
+**Feelings & communication preferences** (`insights`), **Health & symptom notes**
+(`health_data`).
 
-> Only `location` and `trusted_sharing` are enforced by the server today; the other
-> three are stored switches and are not yet gating anything.
+> Enforced by the server today: `location`, `trusted_sharing`, `insights`
+> (storage and the insight tools), and `health_data` (recording symptoms). The
+> other three are stored switches and are not yet gating anything.
 
 ### 4.6 Badges
 
@@ -736,6 +761,50 @@ refetching, mirroring how `/chat` adopts its `saved` frame. A duplicate upload a
 
 Header: back arrow to `/chat`, theme toggle, and the settings avatar — the same content-page
 chrome as `/memory`. The chat app bar links here as **Docs**.
+
+### 5.11 `/insights` — how SAGE adapts to you
+
+1. **How SAGE adapts to you** — *The way you like to be spoken to. You can remove any of
+   these, or export a copy.* Actions: `Export` (downloads JSON), `Forget everything`
+   (`DELETE /api/insights` with `{"confirm": true}`; returns counts). One row per
+   preference: `label: value` with the category as meta, and `Remove`.
+   - Empty state: *Nothing yet. Chat with SAGE and tell it how you like to be spoken to.*
+2. **Feelings you have shared** — *Only feelings you expressed, and they fade after a week.
+   SAGE never guesses how you feel.* One row per mood: the localized mood label, local time,
+   and the note; `Remove`. Expired moods are hidden.
+3. **Permission** — the `insights` switch (§4.5), with the hint that nothing is recorded
+   until it is on.
+
+Header: back arrow to `/chat`, a Care link, theme toggle, and the settings avatar — the same
+content-page chrome as `/memory`. The chat app bar carries **Insights** as an icon-only pill
+at `lg` (the 846px canvas has no room for a sixth label) and a labelled entry in the tab row
+below `lg`.
+
+### 5.12 `/care` — modes, numbers, and symptoms
+
+1. **Disclaimer band** — a warning-tinted note: SAGE is not a doctor, a therapist, or an
+   emergency service and cannot diagnose, prescribe, or send help.
+2. **Care modes** — a **Region** `<select>` and a **Default mode** picker
+   (`Chat · Doctor · Support · Urgent`), with `Save`. Below it, a card lists the curated
+   emergency numbers for the selected region (updates live when the region changes).
+3. **Symptoms you have reported** — *Only what you told SAGE. Recording needs the
+   health-data permission below.* A list with `Remove`, and an add form (`Symptom`,
+   `Severity (1-5)`, `Add`). A `403` surfaces as "turn on health data", not a generic error.
+4. **Permission** — the `health_data` switch (§4.5).
+
+The chat screen adds two elements, both keyed to the feature:
+
+- **Care mode switcher** (`#care-modes`) — a compact pill row above the composer
+  (`Chat · Doctor · Support · Urgent`), filled by `chat.js`; the choice persists in
+  `localStorage` (`th_care_mode`) and is sent as `mode`.
+- **Crisis band** (`#care-notice`) — a dedicated amber band under the header, **separate**
+  from `#voice-banner`, `#recognition-notice`, and `#place-context`. On a `care` frame with
+  `trigger: "crisis"` it shows the local emergency number as a `tel:` link plus links to
+  `/care` and `/trusted`, and is never auto-dismissed. A `suggested` frame shows **Switch**
+  / **Dismiss**; the mode never changes silently.
+
+Header on `/care`: back arrow to `/chat`, an Insights link, theme toggle, and the settings
+avatar.
 
 ---
 

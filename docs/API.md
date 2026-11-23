@@ -69,6 +69,7 @@ GET  /chat, /call          → HTML shells (data-free; the browser fetches with 
 GET  /settings, /memory    → HTML shells
 GET  /schedule, /trusted   → HTML shells
 GET  /documents            → HTML shell
+GET  /insights, /care      → HTML shells
 GET  /favicon.ico
 GET  /static/*
 POST /api/auth/register
@@ -822,7 +823,156 @@ history.
 
 ---
 
-## 11. Limits and constants
+## 11. Insights
+
+Communication preferences and feelings the user **expressed**. Scoped to the
+caller; a foreign id is `404`. See [`INSIGHTS.md`](./INSIGHTS.md).
+
+### 11.1 `GET /api/insights`
+
+Query: `include_expired=1|true|yes` (default off), `limit` (default 20, max 100).
+
+```json
+{
+  "preferences": [
+    { "id": "…", "key": "preferred_name", "category": "identity",
+      "label": "What to call you", "value": "Sam", "confidence": 1.0,
+      "source": "user_stated", "created_at": "…", "updated_at": "…" }
+  ],
+  "moods": [
+    { "id": "…", "mood": "anxious", "valence": -0.6, "confidence": 1.0,
+      "note": "before the exam", "source": "user_stated",
+      "observed_at": "…", "expires_at": "…", "created_at": "…" }
+  ],
+  "consent": { "kind": "insights", "granted": false }
+}
+```
+
+A preference is single-valued per `key` (fixed vocabulary), so a re-save updates
+in place. A mood is append-only and hidden once `expires_at` (default +7 days)
+passes unless `include_expired` is set. `GET` never requires the consent.
+
+### 11.2 `GET /api/insights/export`
+
+`application/json`, `Content-Disposition: attachment; filename="sage-insights-export.json"`.
+Includes expired moods. Generated on demand, never persisted.
+
+### 11.3 `DELETE /api/insights/preference/<id>` · `DELETE /api/insights/mood/<id>`
+
+`204`, or `404 not_found` for an unknown **or foreign** id. Hard delete.
+
+### 11.4 `DELETE /api/insights` — forget everything
+
+`{"confirm": true}` → `200 {"deleted": {"preferences": n, "moods": n}}`. Without
+`confirm: true` the API answers `400 invalid_request`.
+
+### 11.5 Agent tools
+
+Only offered while the `insights` consent is granted.
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `save_preferences` | `preferences: [{key, value, confidence?}]` (1–25) | `{preferences, count}` |
+| `record_mood` | `mood` (required), `note?`, `valence?`, `confidence?`, `observed_at?` | `{mood}` |
+| `recall_moods` | `include_expired?`, `limit?` | `{moods, count}` |
+
+Active preferences are also injected into every system prompt as a "How this
+user likes to be spoken to" block, so there is no recall tool for them.
+
+### 11.6 Consent
+
+`insights` (default **off**) gates storage and the tools. A `revoke` always wins
+over a default. Turning it off hides the tools and stops new recording; the read,
+delete, and export routes keep working so the user can always see and remove what
+is stored.
+
+---
+
+## 12. Care modes
+
+doctor / support / emergency behaviour. Scoped to the caller. See
+[`CARE.md`](./CARE.md).
+
+### 12.1 `GET /api/care`
+
+```json
+{
+  "preferences": { "region": "EG", "preferred_mode": null },
+  "resources": { "region": "EG", "label": "Egypt", "emergency": "123",
+                 "police": "122", "ambulance": "123", "crisis_lines": [],
+                 "message": "If you are in immediate danger, …" },
+  "regions": [{ "region": "EG", "label": "Egypt" }, …],
+  "modes": [{ "mode": "doctor", "label": "Doctor", "hint": "…" }, …],
+  "consent": { "kind": "health_data", "granted": false }
+}
+```
+
+### 12.2 `PUT /api/care/preferences`
+
+```json
+{ "region": "US", "preferred_mode": "therapist" }
+```
+
+`200 {"preferences": {...}}`. An unknown region or mode answers
+`400 invalid_request`. Omitted keys keep their current value; `preferred_mode:
+null` clears it.
+
+### 12.3 `GET` / `POST /api/care/symptoms` · `DELETE /api/care/symptoms/<id>`
+
+`GET` → `200 {"symptoms": [...]}`. `POST` → `201 {"symptom": {…}}`, or
+`403 consent_required` without the `health_data` consent. `DELETE` → `204` /
+`404`. `severity` is 1–5; `symptom` is required.
+
+### 12.4 `GET /api/care/resources?region=`
+
+`200 {"resources": {…}}`. Omitting `region` uses the caller's saved region. Never
+requires consent — the safety information is always reachable.
+
+### 12.5 `POST /api/care/escalate`
+
+```json
+{ "flag_id": "…" }
+```
+
+`200 {"resources": {…}, "contacts": [{ "id": "…", "email": "…", "status": "accepted" }],
+"note": "Reaching out is your choice. This app does not send messages for you."}`.
+Acknowledges the flag when `flag_id` is given. It sends nothing.
+
+### 12.6 `DELETE /api/care`
+
+`{"confirm": true}` → `200 {"deleted": {"symptoms": n, "crisis_flags": n}}`. Also
+resets the care preferences.
+
+### 12.7 Agent tools
+
+`suggest_care_mode` and `get_care_resources` are always offered.
+`save_symptom` / `recall_symptoms` require the `health_data` consent.
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `suggest_care_mode` | `mode` (required), `reason?` | `{suggested, note}` |
+| `save_symptom` | `symptom` (required), `severity?`, `duration?`, `note?`, `observed_at?` | `{symptom}` |
+| `recall_symptoms` | `limit?` | `{symptoms, count}` |
+| `get_care_resources` | `region?` | the curated resources |
+
+### 12.8 The `care` SSE frame
+
+`POST /api/chat/stream` may emit, before any text:
+
+```jsonc
+data: {"care": {"mode": "emergency", "trigger": "crisis",
+                "resources": { "region": "EG", "emergency": "123", … }}}
+```
+
+`trigger` is `crisis` (a deterministic hit on the user's own message; the mode was
+forced to `emergency` server-side) or `suggested` (the model proposed a mode, with
+a `reason`). A crisis frame must never be hidden by another banner, and a
+suggestion is always a confirm — the client must not switch modes silently.
+`POST /api/chat` returns the same object as `body.care` instead of a frame.
+
+---
+
+## 13. Limits and constants
 
 | Constant | Value | Where |
 | --- | --- | --- |
@@ -842,13 +992,17 @@ history.
 | Document upload | 20 MB, 400 pages, 4 000 chunks per file | `POST /api/documents` |
 | Document search | default 6, max 20 passages; query ≤ 300 chars | `search_documents` tool |
 | Document read | ≤ 20 pages and 8 000 chars per call | `read_document` tool |
+| Insight preference | value ≤ 2 000 bytes; key from a fixed set | `save_preferences` tool |
+| Mood observation | 13 moods; expires after 7 days | `record_mood` tool |
+| Care symptom | `symptom` ≤ 200, `severity` 1–5 | `POST /api/care/symptoms` |
+| Care regions | curated set in `care.REGIONS` | `/api/care` |
 | Inactivity warning | 24 h | `GET /api/trusted/people/<id>` |
 | JWT TTL | 7 days (`JWT_TTL_DAYS`) | auth |
 | Name / email / password | 60 / 254 / 8–128 chars | auth |
 
 ---
 
-## 12. TypeScript client
+## 14. TypeScript client
 
 ### 12.1 Core types
 
@@ -1129,7 +1283,7 @@ segment in order, and pause speech recognition while a segment plays.
 
 ---
 
-## 13. Privacy rules the client must not break
+## 15. Privacy rules the client must not break
 
 These are enforced server-side; the client should not fight them.
 
@@ -1157,7 +1311,7 @@ These are enforced server-side; the client should not fight them.
 
 ---
 
-## 14. Environment variables that change API behaviour
+## 16. Environment variables that change API behaviour
 
 | Variable | Default | Effect on this API |
 | --- | --- | --- |

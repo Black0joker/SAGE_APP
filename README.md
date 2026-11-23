@@ -79,7 +79,8 @@ src/
     _layout.tsx         boot gate: fonts, prefs, direction, session → Stack.Protected
     login.tsx  register.tsx
     index.tsx           Chat (home)
-    call.tsx  memory.tsx  schedule.tsx  trusted.tsx  documents.tsx  settings.tsx
+    call.tsx  memory.tsx  schedule.tsx  trusted.tsx  documents.tsx
+    insights.tsx  care.tsx  settings.tsx
   api/
     client.ts           request(), 204/401/envelope handling, redacting dev log
     endpoints.ts        every route in API.md §2–§9, typed
@@ -92,7 +93,8 @@ src/
     chatStream.ts       live bubbles, tool line, stream id
   hooks/                thread, today, location ping, chat controller, reduced motion
   i18n/                 typed en/ar dictionary + useT
-  lib/                  time, storage, rtl, location, speech, export, confirm, documents
+  lib/                  time, storage, rtl, location, speech, export, confirm, documents,
+                        pushToTalk, insights, care
   theme/                tokens (DESIGN §2.4) + theme resolution
   ui/                   AppShell, AppText, Button, Field, Card, Pill, ChatBubble, Composer, ProgressBar
 ```
@@ -108,6 +110,7 @@ src/
 | Location ping | `hooks/useLocationPing.ts` | 5 s cadence, skip in-flight, pause in background, stop permanently on denial or `403` |
 | Call speech | `lib/speech.ts`, `app/call.tsx` | speak **one segment per tool boundary**, never per delta (see below) |
 | PDF upload | `api/upload.ts` | `201` is a stream, `200` is a JSON duplicate; a stream without `done` is a **failure** |
+| Crisis band | `ui/Banners.tsx`, `useChatController` | `alert` role, **no dismiss control**, above every other band; numbers only from `resources` |
 
 ### How call mode records
 
@@ -181,13 +184,16 @@ Pulled from API.md §12 and enforced in code, not just in comments:
 9. A profile email change returns a **new** token, which replaces the stored one.
 10. Only `location` and `trusted_sharing` are enforced server-side; the other consents are stored switches.
 11. Uploaded PDFs are personal data: the upload's progress frames carry `stage`/`done`/`total` only, never text or a filename, and a document id is never logged.
+12. A `care` frame with `trigger: "crisis"` must never be hidden, auto-dismissed, or covered by another band. A `suggested` frame is always a prompt — the mode never changes silently.
+13. Emergency numbers are rendered from `resources`; the app never hard-codes a hotline.
+14. `insights` and `health_data` are **off** by default. Nothing is recorded before the user opts in, and the UI must not imply otherwise.
 
 ---
 
 ## Testing
 
 ```bash
-npm test          # 150 unit tests
+npm test          # 177 unit tests
 ```
 
 Covered: SSE frame parsing and buffering, `ApiError` mapping (204 / error envelope /
