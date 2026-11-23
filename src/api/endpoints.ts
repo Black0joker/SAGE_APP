@@ -11,6 +11,8 @@ import type {
   Contact,
   Conversation,
   CurrentThread,
+  Document,
+  DocumentWithPages,
   ForgotCounts,
   Language,
   LocationContext,
@@ -247,4 +249,24 @@ export const voice = {
       body: payload,
       headers: { Accept: 'audio/mpeg' },
     }),
+};
+
+/**
+ * Uploaded PDFs (API.md §9). The model searches these itself through the
+ * `search_documents` / `read_document` tools — there is no search endpoint for
+ * the UI to call.
+ *
+ * `upload()` lives in `./upload` because it needs multipart + SSE, which the
+ * JSON helpers here cannot carry.
+ */
+export const documents = {
+  list: () => http.get<{ documents: Document[] }>('/api/documents'),
+
+  /** One document with per-page previews. `404` for another account's id. */
+  get: (documentId: string) =>
+    http.get<{ document: DocumentWithPages }>(`/api/documents/${encodeURIComponent(documentId)}`),
+
+  /** Hard delete: the row, its chunks, and its index entries. */
+  remove: (documentId: string) =>
+    http.delete<void>(`/api/documents/${encodeURIComponent(documentId)}`),
 };

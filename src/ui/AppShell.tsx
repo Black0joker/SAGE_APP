@@ -22,6 +22,7 @@ const NAV: { key: string; href: string; label: string; icon: IconName }[] = [
   { key: 'trusted', href: '/trusted', label: 'navTrusted', icon: 'verified-user' },
   { key: 'schedule', href: '/schedule', label: 'navSchedule', icon: 'event' },
   { key: 'memory', href: '/memory', label: 'navMemory', icon: 'psychology' },
+  { key: 'documents', href: '/documents', label: 'navDocs', icon: 'description' },
   { key: 'call', href: '/call', label: 'navCall', icon: 'call' },
 ];
 
@@ -211,7 +212,12 @@ export function AppBar({
                 }}
               >
                 <Icon name={item.icon} size={18} color={active ? theme.chipText : theme.textMeta} />
-                <AppText variant="badge" color={active ? theme.chipText : theme.textMeta} style={{ fontSize: 10 }}>
+                <AppText
+                  variant="badge"
+                  color={active ? theme.chipText : theme.textMeta}
+                  numberOfLines={1}
+                  style={{ fontSize: 10 }}
+                >
                   {t(item.label as never)}
                 </AppText>
               </Pressable>

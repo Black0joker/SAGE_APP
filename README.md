@@ -79,11 +79,12 @@ src/
     _layout.tsx         boot gate: fonts, prefs, direction, session → Stack.Protected
     login.tsx  register.tsx
     index.tsx           Chat (home)
-    call.tsx  memory.tsx  schedule.tsx  trusted.tsx  settings.tsx
+    call.tsx  memory.tsx  schedule.tsx  trusted.tsx  documents.tsx  settings.tsx
   api/
     client.ts           request(), 204/401/envelope handling, redacting dev log
     endpoints.ts        every route in API.md §2–§9, typed
     stream.ts           SSE transport, parseFrame, stopChatStream
+    upload.ts           multipart PDF upload + indexing SSE (DOCUMENTS.md §4)
     authBridge.ts       leaf module owning the token + unauthorised callback
   state/
     session.ts          token in SecureStore, sign-out clears the query cache
@@ -91,9 +92,9 @@ src/
     chatStream.ts       live bubbles, tool line, stream id
   hooks/                thread, today, location ping, chat controller, reduced motion
   i18n/                 typed en/ar dictionary + useT
-  lib/                  time, storage, rtl, location, speech, export, confirm
+  lib/                  time, storage, rtl, location, speech, export, confirm, documents
   theme/                tokens (DESIGN §2.4) + theme resolution
-  ui/                   AppShell, AppText, Button, Field, Card, Pill, ChatBubble, Composer
+  ui/                   AppShell, AppText, Button, Field, Card, Pill, ChatBubble, Composer, ProgressBar
 ```
 
 ### The pieces that carry real risk
@@ -106,6 +107,7 @@ src/
 | RTL | `lib/rtl.ts` | mirrored **manually** via `isRtl`; `I18nManager.forceRTL` is deliberately not used (see below) |
 | Location ping | `hooks/useLocationPing.ts` | 5 s cadence, skip in-flight, pause in background, stop permanently on denial or `403` |
 | Call speech | `lib/speech.ts`, `app/call.tsx` | speak **one segment per tool boundary**, never per delta (see below) |
+| PDF upload | `api/upload.ts` | `201` is a stream, `200` is a JSON duplicate; a stream without `done` is a **failure** |
 
 ### How call mode records
 
@@ -178,21 +180,24 @@ Pulled from API.md §12 and enforced in code, not just in comments:
 8. The device holds no secret except the SAGE JWT.
 9. A profile email change returns a **new** token, which replaces the stored one.
 10. Only `location` and `trusted_sharing` are enforced server-side; the other consents are stored switches.
+11. Uploaded PDFs are personal data: the upload's progress frames carry `stage`/`done`/`total` only, never text or a filename, and a document id is never logged.
 
 ---
 
 ## Testing
 
 ```bash
-npm test          # 73 unit tests
+npm test          # 150 unit tests
 ```
 
 Covered: SSE frame parsing and buffering, `ApiError` mapping (204 / error envelope /
 401 sign-out / expiry pre-emption / network failure / abort passthrough /
 `X-Request-ID`), the timezone and formatting helpers the API contract depends on,
 the stream store's optimistic → saved → stopped transitions, call-mode sentence
-segmentation, the i18n key inventory (both languages, no missing keys), and
-regressions for bugs found during live web QA.
+segmentation, the document upload contract (frame parsing, the `200` duplicate body,
+`413`, and a stream that ends without `done` being an error), the PDF size/type
+guards and progress maths, the i18n key inventory (both languages, no missing keys),
+and regressions for bugs found during live web QA.
 
 ### What was verified against the running API
 
