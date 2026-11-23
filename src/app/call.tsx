@@ -11,9 +11,21 @@ import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useT } from '@/i18n/useT';
 import { SpeechQueue, configureAudioForPlayback } from '@/lib/speech';
 import {
+  abandon,
+  beginRecording,
+  captureFinal,
+  capturePartial,
+  idleRecording,
+  interrupt,
+  requestStop,
+  takeText,
+  type RecordingState,
+} from '@/lib/pushToTalk';
+import {
   abortRecognition,
   addRecognitionListeners,
   isSpeechRecognitionAvailable,
+  recognitionReadiness,
   requestRecognitionPermissions,
   startRecognition,
   stopRecognition,
@@ -133,16 +145,20 @@ export default function CallScreen() {
   /** Index into `assistantBufferRef` up to which text has been queued for speech. */
   const flushedLengthRef = useRef(0);
   const assistantTurnIdRef = useRef<string | null>(null);
-  const recordingRef = useRef(false);
   const phaseRef = useRef<Phase>('idle');
   /** True between a user hang-up and the next call, so `onClose` skips the flush. */
   const phaseStoppedRef = useRef(false);
-  /** Finals accumulated during the current recording, in order. */
-  const sessionTextRef = useRef('');
-  /** Latest interim transcript, used as a fallback when no final ever arrives. */
-  const partialRef = useRef('');
-  /** Set when the user taps Stop: the next final/end must send the buffer. */
-  const pendingSendRef = useRef(false);
+  /**
+   * The push-to-talk session. A ref, not state: the recogniser callbacks fire
+   * outside React's render cycle and must read the newest value.
+   */
+  const sessionRef = useRef<RecordingState>(idleRecording);
+  /**
+   * Whether the native recogniser can actually run. Set once per call, from
+   * `recognitionReadiness()` + the permission prompt. Until this is true the
+   * screen must never claim to be recording.
+   */
+  const recognitionReadyRef = useRef(false);
   /** Safety net for recognizers that never emit a final after stop. */
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Short grace window so a trailing final can land before we send. */
@@ -156,10 +172,6 @@ export default function CallScreen() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
-
-  useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
 
   /**
    * The status-derived banner is computed rather than stored, so the effect that
@@ -274,30 +286,22 @@ export default function CallScreen() {
   }, []);
 
   const handleFinalSpeech = useCallback((transcript: string) => {
-    const text = transcript.trim();
-    if (!text) return;
-    // Accumulate: nothing is sent until the user taps Stop.
-    sessionTextRef.current = sessionTextRef.current ? `${sessionTextRef.current} ${text}` : text;
-    setCaptured(sessionTextRef.current);
+    sessionRef.current = captureFinal(sessionRef.current, transcript);
+    setCaptured(sessionRef.current.captured);
     setPartial('');
-    partialRef.current = '';
   }, []);
 
   /**
    * Sends whatever has been captured, exactly once, then resets the session.
-   *
-   * Prefers the accumulated finals, but falls back to the latest partial: some
-   * Android recognisers never mark a result final for a short utterance, so a
-   * recording could otherwise be discarded while the words were on screen.
    *
    * `force` is used by the safety timer, which must send even if the engine never
    * signals the end of the utterance.
    */
   const flushRecording = useCallback(
     (force = false) => {
-      if (!pendingSendRef.current) return;
-      if (!force && recordingRef.current) return;
-      pendingSendRef.current = false;
+      const session = sessionRef.current;
+      if (!session.pendingSend) return;
+      if (!force && session.recording) return;
 
       if (sendTimerRef.current) {
         clearTimeout(sendTimerRef.current);
@@ -308,49 +312,67 @@ export default function CallScreen() {
         graceTimerRef.current = null;
       }
 
-      const finals = sessionTextRef.current.trim();
-      const fallback = partialRef.current.trim();
-      const text = finals || fallback;
+      const { text, next } = takeText(session);
+      const source = session.captured.trim() ? 'final' : session.partial.trim() ? 'partial' : 'empty';
+      const finalsLength = session.captured.trim().length;
+      const partialLength = session.partial.trim().length;
+      sessionRef.current = next;
 
-      logStt('flush', {
-        source: finals ? 'final' : fallback ? 'partial' : 'empty',
-        finals: finals.length,
-        partial: fallback.length,
-      });
+      logStt('flush', { source, finals: finalsLength, partial: partialLength });
 
-      sessionTextRef.current = '';
-      partialRef.current = '';
       setCaptured('');
       setPartial('');
-      if (!text) return; // nothing was said: send nothing
+
+      if (!text) {
+        // The user tapped Stop and nothing was heard. Say so instead of
+        // returning silently, which is what made this look like a dead button.
+        setBanner(t('noSpeech'));
+        return;
+      }
 
       logStt('send', { chars: text.length });
       setTurns((current) => [...current, { id: nextTurnId(), role: 'user', content: text }]);
       runAssistantTurn({ message: text });
     },
-    [logStt, runAssistantTurn],
+    [logStt, runAssistantTurn, t],
   );
 
   const startRecording = useCallback(() => {
-    if (phaseRef.current !== 'live' || speaking) return;
-    sessionTextRef.current = '';
-    partialRef.current = '';
-    pendingSendRef.current = false;
+    if (phaseRef.current !== 'live') return;
+
+    // Never enter a recording state we cannot honour. `startRecognition` is a
+    // silent no-op without the native module, so checking here is the only way
+    // the UI can stay honest in Expo Go.
+    if (!recognitionReadyRef.current) {
+      logStt('blocked', { reason: 'no-recognition' });
+      setBanner(isSpeechRecognitionAvailable() ? t('micDenied') : t('micNoDevBuild'));
+      return;
+    }
+
+    if (speaking) {
+      logStt('blocked', { reason: 'speaking' });
+      setBanner(t('waitForSpeech'));
+      return;
+    }
+
+    sessionRef.current = beginRecording();
     setCaptured('');
     setPartial('');
+    setBanner(null);
     setRecording(true);
-    recordingRef.current = true;
     logStt('start', { lang: language });
     startRecognition(language);
-  }, [language, logStt, speaking]);
+  }, [language, logStt, speaking, t]);
 
   const stopRecording = useCallback(() => {
-    if (!recordingRef.current) return;
+    if (!sessionRef.current.recording) return;
+    sessionRef.current = requestStop(sessionRef.current);
     setRecording(false);
-    recordingRef.current = false;
+    logStt('stop', {
+      partial: sessionRef.current.partial.length,
+      finals: sessionRef.current.captured.length,
+    });
     // Ask the engine to finalise; the result arrives asynchronously.
-    pendingSendRef.current = true;
-    logStt('stop', { partial: partialRef.current.length, finals: sessionTextRef.current.length });
     stopRecognition();
 
     // Some Android recognizers never emit a final after stop, so never hang.
@@ -363,7 +385,7 @@ export default function CallScreen() {
 
   /** Sends after a short grace window, so a trailing final can still arrive. */
   const scheduleFlush = useCallback(() => {
-    if (!pendingSendRef.current) return;
+    if (!sessionRef.current.pendingSend) return;
     if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
     graceTimerRef.current = setTimeout(() => {
       graceTimerRef.current = null;
@@ -376,16 +398,17 @@ export default function CallScreen() {
 
     const unsubscribe = addRecognitionListeners({
       onEnd: () => {
+        const session = sessionRef.current;
         logStt('end', {
-          recording: recordingRef.current,
-          pending: pendingSendRef.current,
-          finals: sessionTextRef.current.length,
-          partial: partialRef.current.length,
+          recording: session.recording,
+          pending: session.pendingSend,
+          finals: session.captured.length,
+          partial: session.partial.length,
         });
         // Push-to-talk: resume only while the user is still recording.
-        if (recordingRef.current) {
+        if (session.recording) {
           setTimeout(() => {
-            if (recordingRef.current) startRecognition(language);
+            if (sessionRef.current.recording) startRecognition(language);
           }, 300);
         } else {
           // A trailing final often lands just after `end`, so wait briefly.
@@ -393,7 +416,7 @@ export default function CallScreen() {
         }
       },
       onPartial: (transcript) => {
-        partialRef.current = transcript;
+        sessionRef.current = capturePartial(sessionRef.current, transcript);
         setPartial(transcript);
       },
       onFinal: (transcript) => {
@@ -404,6 +427,7 @@ export default function CallScreen() {
         scheduleFlush();
       },
       onError: (code) => {
+        logStt('error', { code });
         if (code.includes('not-allowed') || code.includes('permission')) {
           setBanner(t('micDenied'));
         } else if (code.includes('no-speech') || code.includes('nomatch')) {
@@ -415,10 +439,11 @@ export default function CallScreen() {
         } else if (code.includes('audio-capture')) {
           setBanner(t('micUnavailable'));
         }
-        // Stop cleanly, keeping whatever was already captured.
+        // Stop cleanly but KEEP what was already heard: an error ends the
+        // utterance, it does not invalidate the words captured so far.
+        sessionRef.current = interrupt(sessionRef.current);
         setRecording(false);
-        recordingRef.current = false;
-        // A stop may still be waiting for text; send what we have.
+        // A pending send still flushes; with text captured, `interrupt` marked it.
         scheduleFlush();
       },
     });
@@ -450,8 +475,10 @@ export default function CallScreen() {
 
     // Typing always works, so this is a warning rather than a failure.
     const nativeAvailable = isSpeechRecognitionAvailable();
-    const recognitionReady = nativeAvailable && (await requestRecognitionPermissions());
-    if (!recognitionReady) {
+    const permissionGranted = nativeAvailable && (await requestRecognitionPermissions());
+    // The single flag that decides whether Record can do anything at all.
+    recognitionReadyRef.current = recognitionReadiness().ready && permissionGranted;
+    if (!recognitionReadyRef.current) {
       setBanner(
         nativeAvailable
           ? t('micDenied') // native module present, permission refused
@@ -481,9 +508,7 @@ export default function CallScreen() {
     // (the server deletes it, so there is nothing to say).
     phaseStoppedRef.current = true;
     // Discard an in-progress recording: a hung-up call must not send it.
-    pendingSendRef.current = false;
-    sessionTextRef.current = '';
-    partialRef.current = '';
+    sessionRef.current = abandon();
     if (sendTimerRef.current) {
       clearTimeout(sendTimerRef.current);
       sendTimerRef.current = null;
@@ -493,7 +518,7 @@ export default function CallScreen() {
       graceTimerRef.current = null;
     }
     setRecording(false);
-    recordingRef.current = false;
+    recognitionReadyRef.current = false;
     speechRef.current?.clear();
     speechRef.current = null;
     abortRecognition();
@@ -517,9 +542,9 @@ export default function CallScreen() {
     [],
   );
 
-  /** Push-to-talk toggle. Disabled while SAGE is speaking, so it never hears itself. */
+  /** Push-to-talk toggle. Tapping while speaking explains itself instead of no-oping. */
   const toggleRecording = useCallback(() => {
-    if (recordingRef.current) stopRecording();
+    if (sessionRef.current.recording) stopRecording();
     else startRecording();
   }, [startRecording, stopRecording]);
 
@@ -601,11 +626,12 @@ export default function CallScreen() {
               <Button label={t('hangup')} variant="hangup" onPress={hangUp} />
               <Button
                 // Push-to-talk: tap to open the mic, tap again to stop and send.
+                // Deliberately NOT disabled while SAGE speaks: `startRecording`
+                // explains why it cannot open instead of leaving a dead control.
                 label={recording ? t('stopRecording') : t('record')}
                 variant={recording ? 'primary' : 'secondary'}
                 icon={recording ? 'stop' : 'mic'}
                 onPress={toggleRecording}
-                disabled={speaking}
                 accessibilityHint={t('recordHint')}
                 testID="record-toggle"
               />
